@@ -18,7 +18,8 @@ export interface Setup {
 
 type Run = { status: "idle" } | { status: "running"; progress?: PlanProgress } | { status: "ready"; result: PlanResult } | { status: "error"; message: string };
 
-const panel = "rounded-xl border border-line bg-stage";
+const card = "rounded-[18px] border border-line bg-stage";
+const field = "h-11 w-full rounded-[10px] border border-line bg-house px-3 text-sm text-ink placeholder:text-muted focus:border-marquee focus:outline-none";
 
 function ScenarioCard({ scenario, slate, active, onPick }: { scenario: Scenario; slate?: SlateSnapshot; active: boolean; onPick: () => void }) {
 	const you = scenario.you ? slate?.titles.find((t) => t.id === scenario.you) : undefined;
@@ -28,11 +29,11 @@ function ScenarioCard({ scenario, slate, active, onPick }: { scenario: Scenario;
 			onClick={onPick}
 			disabled={!slate}
 			aria-pressed={active}
-			className={`group flex h-full flex-col rounded-xl border p-4 text-left transition-colors disabled:opacity-50 ${active ? "border-marquee bg-marquee/10" : "border-line bg-stage hover:border-marquee/60"}`}
+			className={`flex w-full flex-col gap-1 rounded-xl border p-3.5 text-left transition-colors disabled:opacity-50 ${active ? "border-marquee bg-marquee/10" : "border-line bg-house/60 hover:border-marquee/60"}`}
 		>
-			<span className="font-display text-3xl leading-none tracking-wide text-marquee">{scenario.name}</span>
-			<span className="mt-2 text-sm text-ink-2">{scenario.question}</span>
-			<span className="mt-auto pt-3 text-xs text-muted">
+			<span className="font-display text-2xl leading-none tracking-wide text-marquee">{scenario.name}</span>
+			<span className="text-sm text-ink-2">{scenario.question}</span>
+			<span className="text-xs text-muted">
 				{you ? `${you.title} · now ${fmtDay(you.date, { month: "short", day: "numeric" })} · ` : ""}
 				Audience: fans of {scenario.comps.map((c) => c.short ?? c.name).join(", ")}
 			</span>
@@ -56,27 +57,47 @@ function CompSearch({ comps, onChange }: { comps: Comp[]; onChange: (comps: Comp
 		}
 	};
 	return (
-		<div>
+		<div className="flex flex-col gap-3">
+			{comps.length > 0 && (
+				<ul className="flex flex-wrap gap-2">
+					{comps.map((c) => (
+						<li key={c.id} className="flex min-h-10 items-center gap-1 rounded-full border border-marquee/50 bg-marquee/10 py-0.5 pr-0.5 pl-3.5 text-sm">
+							{c.name}
+							{c.year ? <span className="text-xs text-muted"> ({c.year})</span> : null}
+							<button
+								type="button"
+								onClick={() => onChange(comps.filter((x) => x.id !== c.id))}
+								aria-label={`Remove ${c.name}`}
+								className="flex size-9 items-center justify-center rounded-full text-muted hover:bg-line/60 hover:text-ink"
+							>
+								<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+									<path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+								</svg>
+							</button>
+						</li>
+					))}
+				</ul>
+			)}
 			<form onSubmit={search} className="flex gap-2">
 				<input
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
 					placeholder="A released film, e.g. Arrival"
 					aria-label="Search released films"
-					className="min-w-0 flex-1 rounded-lg border border-line bg-house px-3 py-2 text-sm text-ink placeholder:text-muted focus:border-marquee focus:outline-none"
+					className={`${field} min-w-0 flex-1`}
 				/>
 				<button
 					type="submit"
 					disabled={state.busy || query.trim().length < 2}
-					className="rounded-lg border border-line px-3 py-2 text-sm text-ink-2 hover:border-marquee disabled:opacity-50"
+					className="h-11 shrink-0 rounded-[10px] border border-line px-4 text-sm font-medium text-ink hover:border-marquee disabled:opacity-50"
 				>
 					{state.busy ? "Searching…" : "Search"}
 				</button>
 			</form>
-			{state.error && <p className="mt-2 text-xs text-hot">{state.error}</p>}
+			{state.error && <p className="text-xs text-hot">{state.error}</p>}
 			{results && (
-				<ul className="mt-2 max-h-56 overflow-auto rounded-lg border border-line bg-house">
-					{results.length === 0 && <li className="px-3 py-2 text-sm text-muted">No films found.</li>}
+				<ul className="max-h-56 overflow-auto rounded-[10px] border border-line bg-house">
+					{results.length === 0 && <li className="px-3 py-2.5 text-sm text-muted">No films found.</li>}
 					{results.map((r) => {
 						const picked = comps.some((c) => c.id === r.id);
 						return (
@@ -85,7 +106,7 @@ function CompSearch({ comps, onChange }: { comps: Comp[]; onChange: (comps: Comp
 									type="button"
 									disabled={picked || comps.length >= 5}
 									onClick={() => onChange([...comps, r])}
-									className="flex w-full items-baseline justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-stage disabled:opacity-40"
+									className="flex min-h-11 w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-stage disabled:opacity-40"
 								>
 									<span className="text-ink">{r.name}</span>
 									<span className="text-xs text-muted">{picked ? "added" : (r.year ?? "")}</span>
@@ -95,25 +116,34 @@ function CompSearch({ comps, onChange }: { comps: Comp[]; onChange: (comps: Comp
 					})}
 				</ul>
 			)}
-			{comps.length > 0 && (
-				<ul className="mt-3 flex flex-wrap gap-2">
-					{comps.map((c) => (
-						<li key={c.id} className="flex items-center gap-1 rounded-full border border-marquee/50 bg-marquee/10 py-1 pr-1 pl-3 text-sm">
-							{c.name}
-							{c.year ? <span className="text-xs text-muted"> ({c.year})</span> : null}
-							<button
-								type="button"
-								onClick={() => onChange(comps.filter((x) => x.id !== c.id))}
-								aria-label={`Remove ${c.name}`}
-								className="rounded-full px-2 text-muted hover:text-ink"
-							>
-								×
-							</button>
-						</li>
-					))}
-				</ul>
-			)}
 		</div>
+	);
+}
+
+function Intro({ slate }: { slate?: SlateSnapshot }) {
+	return (
+		<section aria-labelledby="intro" className={`${card} overflow-hidden`}>
+			<div aria-hidden className="marquee-bulbs h-[18px] border-b border-line bg-marquee/5" />
+			<div className="flex flex-col gap-4 px-5 py-8 sm:px-9">
+				<p className="font-mono text-xs tracking-[0.16em] text-marquee uppercase">Qloo Agentic Hackathon</p>
+				<h1
+					id="intro"
+					className="font-display text-[clamp(52px,7vw,112px)] leading-[0.88] tracking-[0.01em] text-marquee [text-shadow:0_0_32px_rgb(242_182_50/0.3)]"
+				>
+					Find the week your audience is free
+				</h1>
+				<p className="max-w-2xl text-pretty text-ink-2">
+					Pick a release week your audience isn't already spoken for. Clear Run builds the live US release calendar from open data, asks Qloo's taste graph how strongly fans of
+					your comps care about every rival (games included), and turns that into week-by-week audience pressure, with clear weeks, danger weeks and counter-programming openings.
+				</p>
+				{slate && (
+					<p className="font-mono text-xs text-muted">
+						Live slate: {fmtDay(slate.windowStart)} – {fmtDay(slate.windowEnd, { month: "short", day: "numeric", year: "numeric" })}
+					</p>
+				)}
+				<p className="text-sm text-ink">Start with a real release decision, or describe your own audience.</p>
+			</div>
+		</section>
 	);
 }
 
@@ -158,82 +188,86 @@ export function Planner({ slate }: { slate?: SlateSnapshot }) {
 	}, [slate, pickScenario]);
 
 	return (
-		<section>
-			<h2 className="mb-3 font-display text-3xl tracking-wide">Try a real release decision</h2>
-			<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-				{SCENARIOS.map((s) => (
-					<ScenarioCard key={s.id} scenario={s} slate={slate} active={setup?.scenario === s.id} onPick={() => pickScenario(s)} />
-				))}
-			</div>
+		<div className="flex flex-wrap items-start gap-7">
+			<aside aria-label="Your release" className={`${card} flex min-w-0 flex-[1_1_340px] flex-col gap-6 p-5 sm:p-6`}>
+				<div className="flex flex-col gap-1.5">
+					<p className="font-mono text-[11px] tracking-[0.18em] text-marquee uppercase">Your release</p>
+					<h2 className="font-display text-4xl leading-none tracking-wide">Plan a release week</h2>
+				</div>
 
-			<details className={`${panel} mt-4 p-4`}>
-				<summary className="font-display text-2xl tracking-wide">Or plan your own title</summary>
-				<div className="mt-4 grid gap-5 md:grid-cols-[1.4fr_1fr]">
-					<div>
-						<p className="mb-2 text-sm text-ink-2">Describe your audience with 2–5 released films whose fans you want (your comps).</p>
+				<section aria-labelledby="scenarios" className="flex flex-col gap-2.5">
+					<h3 id="scenarios" className="text-[13px] font-semibold">
+						Try a real release decision
+					</h3>
+					<ul className="flex flex-col gap-2">
+						{SCENARIOS.map((s) => (
+							<li key={s.id}>
+								<ScenarioCard scenario={s} slate={slate} active={setup?.scenario === s.id} onPick={() => pickScenario(s)} />
+							</li>
+						))}
+					</ul>
+				</section>
+
+				<section aria-labelledby="own" className="flex flex-col gap-4 border-t border-dashed border-line pt-5">
+					<h3 id="own" className="text-[13px] font-semibold">
+						Or plan your own title
+					</h3>
+					<div className="flex flex-col gap-2">
+						<p className="text-[13px] text-muted">Describe your audience with 2–5 released films whose fans you want (your comps).</p>
 						<CompSearch comps={draft.comps} onChange={(comps) => setDraft({ ...draft, comps })} />
 					</div>
-					<div className="space-y-4">
-						<label className="block text-sm text-ink-2">
-							Your title, if it's already dated (optional)
-							<select
-								value={draft.you ?? ""}
-								onChange={(e) => setDraft({ ...draft, you: e.target.value || undefined })}
-								className="mt-1 w-full rounded-lg border border-line bg-house px-3 py-2 text-sm text-ink"
-							>
-								<option value="">Not on the calendar yet</option>
-								{films.map((t) => (
-									<option key={`${t.id}@${t.date}`} value={t.id}>
-										{t.title} · {fmtDay(t.date)}
-									</option>
-								))}
-							</select>
-						</label>
-						<label className="block text-sm text-ink-2">
-							Earliest week you could open
-							<select
-								value={draft.from ?? defaultFrom}
-								onChange={(e) => setDraft({ ...draft, from: e.target.value })}
-								className="mt-1 w-full rounded-lg border border-line bg-house px-3 py-2 text-sm text-ink"
-							>
-								{weeks.map((w) => (
-									<option key={w} value={w}>
-										Week of {fmtDay(w, { month: "short", day: "numeric", year: "numeric" })}
-									</option>
-								))}
-							</select>
-						</label>
-						<button
-							type="button"
-							disabled={draft.comps.length === 0 || !slate}
-							onClick={() => start({ comps: draft.comps, you: draft.you, from: draft.from ?? defaultFrom })}
-							className="w-full rounded-lg bg-marquee px-4 py-2.5 font-semibold text-marquee-ink hover:brightness-110 disabled:opacity-40"
-						>
-							Find my week
-						</button>
-					</div>
-				</div>
-			</details>
+					<label className="flex flex-col gap-1.5 text-[13px] text-ink-2">
+						Your title, if it's already dated (optional)
+						<select value={draft.you ?? ""} onChange={(e) => setDraft({ ...draft, you: e.target.value || undefined })} className={field}>
+							<option value="">Not on the calendar yet</option>
+							{films.map((t) => (
+								<option key={`${t.id}@${t.date}`} value={t.id}>
+									{t.title} · {fmtDay(t.date)}
+								</option>
+							))}
+						</select>
+					</label>
+					<label className="flex flex-col gap-1.5 text-[13px] text-ink-2">
+						Earliest week you could open
+						<select value={draft.from ?? defaultFrom} onChange={(e) => setDraft({ ...draft, from: e.target.value })} className={field}>
+							{weeks.map((w) => (
+								<option key={w} value={w}>
+									Week of {fmtDay(w, { month: "short", day: "numeric", year: "numeric" })}
+								</option>
+							))}
+						</select>
+					</label>
+					<button
+						type="button"
+						disabled={draft.comps.length === 0 || !slate}
+						onClick={() => start({ comps: draft.comps, you: draft.you, from: draft.from ?? defaultFrom })}
+						className="h-12 w-full rounded-[10px] bg-marquee px-4 text-[15px] font-semibold text-marquee-ink hover:brightness-110 disabled:opacity-40"
+					>
+						Find my week
+					</button>
+				</section>
+			</aside>
 
-			<div ref={results} className="mt-8">
+			<div ref={results} className="flex min-w-0 flex-[999_1_640px] flex-col gap-7">
+				{run.status === "idle" && <Intro slate={slate} />}
 				{run.status === "running" && (
-					<div className={`${panel} p-5`} role="status" aria-live="polite">
-						<p className="font-display text-2xl tracking-wide text-marquee">Scoring rivals against your audience…</p>
-						<p className="mt-1 text-sm text-ink-2">
+					<div className={`${card} flex flex-col gap-3 p-6`} role="status" aria-live="polite">
+						<p className="font-display text-3xl tracking-wide text-marquee">Scoring rivals against your audience…</p>
+						<p className="text-sm text-ink-2">
 							{run.progress
 								? `Qloo has scored ${run.progress.scored} of ${run.progress.total} titles (${run.progress.qlooCalls} Qloo call${run.progress.qlooCalls === 1 ? "" : "s"} so far).`
 								: "Reading the live calendar and the score cache."}
 						</p>
-						<div className="mt-3 h-1.5 overflow-hidden rounded bg-line">
+						<div className="h-1.5 overflow-hidden rounded bg-line">
 							<div className="h-full rounded bg-marquee transition-all" style={{ width: `${run.progress ? Math.max(8, (run.progress.scored / run.progress.total) * 100) : 8}%` }} />
 						</div>
 					</div>
 				)}
 				{run.status === "error" && (
-					<div className={`${panel} border-hot/60 p-5`} role="alert">
+					<div className={`${card} border-hot/60 p-6`} role="alert">
 						<p className="text-ink">{run.message}</p>
 						{setup && (
-							<button type="button" onClick={() => start(setup)} className="mt-3 rounded-lg border border-line px-3 py-1.5 text-sm hover:border-marquee">
+							<button type="button" onClick={() => start(setup)} className="mt-3 min-h-11 rounded-[10px] border border-line px-4 text-sm hover:border-marquee">
 								Try again
 							</button>
 						)}
@@ -243,6 +277,6 @@ export function Planner({ slate }: { slate?: SlateSnapshot }) {
 					<PlanView key={`${setup.scenario ?? "custom"}-${run.result.comps.join()}-${setup.you ?? ""}-${setup.from}`} result={run.result} setup={setup} weeks={weeks} />
 				)}
 			</div>
-		</section>
+		</div>
 	);
 }

@@ -33,4 +33,21 @@
 	summary {
 		cursor: pointer;
 	}
+	:focus-visible {
+		outline: 2px solid var(--color-marquee);
+		outline-offset: 2px;
+	}
+}
+
+/* A row of lit marquee bulbs along the top edge of a headline card. */
+@utility marquee-bulbs {
+	background-image: radial-gradient(
+		circle at center,
+		color-mix(in srgb, var(--color-marquee) 45%, white) 0 2.5px,
+		color-mix(in srgb, var(--color-marquee) 45%, transparent) 3.5px,
+		transparent 6px
+	);
+	background-size: 22px 18px;
+	background-repeat: repeat-x;
+	background-position: center;
 }
