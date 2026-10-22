@@ -182,10 +182,8 @@ export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent: boolea
 		[start, weeks, defaultFrom],
 	);
 
-	const fromAgent = useCallback(
-		(plan: AgentPlan) => start({ comps: plan.comps, you: plan.you, from: weeks.includes(plan.from) ? plan.from : defaultFrom, agent: true }),
-		[start, weeks, defaultFrom],
-	);
+	// The agent's earliest week came from the same slate; trust it (a share link can load before the slate does).
+	const fromAgent = useCallback((plan: AgentPlan) => start({ comps: plan.comps, you: plan.you, from: plan.from || defaultFrom, agent: true }), [start, defaultFrom]);
 
 	// Share links: ?scenario=dunesday runs that scenario on load.
 	const autoRan = useRef(false);
@@ -198,7 +196,8 @@ export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent: boolea
 
 	return (
 		<div className="flex flex-wrap items-start gap-7">
-			<aside aria-label="Your release" className={`${card} flex min-w-0 flex-[1_1_340px] flex-col gap-6 p-5 sm:p-6`}>
+			{/* Once the columns stack (below 1072px), the agent and the answer come first and the setup panel follows. */}
+			<aside aria-label="Your release" className={`${card} flex min-w-0 flex-[1_1_340px] flex-col gap-6 p-5 max-[1071px]:order-last sm:p-6`}>
 				<div className="flex flex-col gap-1.5">
 					<p className="font-mono text-[11px] tracking-[0.18em] text-marquee uppercase">Your release</p>
 					<h2 className="font-display text-4xl leading-none tracking-wide">Plan a release week</h2>
