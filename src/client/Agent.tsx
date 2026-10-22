@@ -188,7 +188,7 @@ export function AgentPanel({ enabled, onPlan }: { enabled: boolean; onPlan: (pla
 							maxLength={500}
 							placeholder="e.g. When should my Hereditary-style horror film open?"
 							aria-label="Question for the release agent"
-							className={`${field} min-w-0 flex-1`}
+							className={`${field} min-w-0 sm:flex-1`}
 						/>
 						<button
 							type="submit"
