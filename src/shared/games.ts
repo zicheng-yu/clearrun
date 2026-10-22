@@ -13,6 +13,8 @@ export interface GameTentpole {
 	source: string;
 	checked: string;
 	proxy: QlooRef;
+	/** Other names people use, for title search. */
+	aliases?: string[];
 }
 
 export const GAMES: GameTentpole[] = [
@@ -23,6 +25,7 @@ export const GAMES: GameTentpole[] = [
 		source: "https://en.wikipedia.org/wiki/Grand_Theft_Auto_VI",
 		checked: "2026-10-21",
 		proxy: { id: "FEFD4E0D-D8F2-4BF9-86C9-06949DE82BCD", name: "Grand Theft Auto V" },
+		aliases: ["GTA VI", "GTA 6", "GTA6"],
 	},
 	{
 		title: "Fable",

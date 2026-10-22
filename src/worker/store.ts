@@ -10,6 +10,7 @@ const SCHEMA = [
 	`CREATE TABLE IF NOT EXISTS qloo_usage (month TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0, shared_remaining INTEGER, updated_at INTEGER)`,
 	`CREATE TABLE IF NOT EXISTS qloo_daily (day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0)`,
 	`CREATE TABLE IF NOT EXISTS llm_spend (day TEXT PRIMARY KEY, cost_usd REAL NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, client TEXT NOT NULL, question_key TEXT NOT NULL, snapshot_id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL)`,
 ];
 
 let ready: Promise<void> | undefined;
@@ -159,4 +160,63 @@ export async function recordLlmSpend(db: D1Database, costUsd: number, tokens: nu
 		)
 		.bind(dayKey(), costUsd, tokens)
 		.run();
+}
+
+export interface AgentRunRow<S> {
+	id: string;
+	createdAt: number;
+	client: string;
+	questionKey: string;
+	snapshotId: string;
+	status: "running" | "done";
+	state: S;
+}
+
+export async function loadAgentRun<S>(db: D1Database, id: string): Promise<AgentRunRow<S> | undefined> {
+	await ensureSchema(db);
+	const row = await db
+		.prepare("SELECT id, created_at, client, question_key, snapshot_id, status, body FROM agent_runs WHERE id = ?1")
+		.bind(id)
+		.first<{ id: string; created_at: number; client: string; question_key: string; snapshot_id: string; status: string; body: string }>();
+	if (!row) return undefined;
+	return {
+		id: row.id,
+		createdAt: row.created_at,
+		client: row.client,
+		questionKey: row.question_key,
+		snapshotId: row.snapshot_id,
+		status: row.status === "done" ? "done" : "running",
+		state: JSON.parse(row.body) as S,
+	};
+}
+
+export async function saveAgentRun<S>(db: D1Database, run: AgentRunRow<S>): Promise<void> {
+	await ensureSchema(db);
+	await db
+		.prepare(
+			`INSERT INTO agent_runs (id, created_at, updated_at, client, question_key, snapshot_id, status, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+			 ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, status = excluded.status, body = excluded.body`,
+		)
+		.bind(run.id, run.createdAt, Date.now(), run.client, run.questionKey, run.snapshotId, run.status, JSON.stringify(run.state))
+		.run();
+}
+
+/** A finished run of the same question against the same slate, recent enough to replay instead of re-asking the model. */
+export async function findAgentReplay(db: D1Database, questionKey: string, snapshotId: string, since: number): Promise<string | undefined> {
+	await ensureSchema(db);
+	const row = await db
+		.prepare("SELECT id FROM agent_runs WHERE question_key = ?1 AND snapshot_id = ?2 AND status = 'done' AND created_at > ?3 ORDER BY created_at DESC LIMIT 1")
+		.bind(questionKey, snapshotId, since)
+		.first<{ id: string }>();
+	return row?.id;
+}
+
+/** Runs one client started since `since`; also drops runs older than two weeks. */
+export async function agentRunsSince(db: D1Database, client: string, since: number): Promise<number> {
+	await ensureSchema(db);
+	const [count] = await db.batch([
+		db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE client = ?1 AND created_at > ?2").bind(client, since),
+		db.prepare("DELETE FROM agent_runs WHERE created_at < ?1").bind(Date.now() - 14 * 24 * 3600 * 1000),
+	]);
+	return (count?.results[0] as { n?: number } | undefined)?.n ?? 0;
 }

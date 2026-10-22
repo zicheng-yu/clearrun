@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import type { Comp, PlanProgress, PlanRequest, PlanResponse, PlanResult } from "../shared/types.ts";
+import type { Comparison } from "../engine/explain/compare.ts";
+import type { AudienceProfile } from "../engine/explain/demographics.ts";
+import type { AgentStepResponse, Comp, PlanProgress, PlanRequest, PlanResponse, PlanResult } from "../shared/types.ts";
 
 async function errorMessage(response: Response): Promise<string> {
 	const body = (await response.json().catch(() => ({}))) as { message?: string };
@@ -40,4 +42,29 @@ export async function searchFilms(query: string, signal?: AbortSignal): Promise<
 	const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`, { signal });
 	if (!response.ok) throw new Error(await errorMessage(response));
 	return ((await response.json()) as { results: Comp[] }).results;
+}
+
+/** Taste tags the comps share with a rival (or a game's proxy). */
+export async function fetchExplain(comps: string[], rival: string, signal?: AbortSignal): Promise<Comparison> {
+	const response = await fetch(`/api/explain?comps=${encodeURIComponent(comps.join(","))}&rival=${encodeURIComponent(rival)}`, { signal });
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return (await response.json()) as Comparison;
+}
+
+export async function fetchAudience(comps: string[], signal?: AbortSignal): Promise<AudienceProfile | null> {
+	const response = await fetch(`/api/audience?comps=${encodeURIComponent(comps.join(","))}`, { signal });
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return ((await response.json()) as { profile: AudienceProfile | null }).profile;
+}
+
+export async function agentStep(body: { question: string } | { runId: string; after: number }, signal?: AbortSignal): Promise<AgentStepResponse> {
+	const response = await fetch("/api/agent/step", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return (await response.json()) as AgentStepResponse;
+}
+
+export async function fetchAgentRun(id: string, signal?: AbortSignal): Promise<AgentStepResponse> {
+	const response = await fetch(`/api/agent/run?id=${encodeURIComponent(id)}`, { signal });
+	if (!response.ok) throw new Error(response.status === 404 ? "That agent run has expired." : await errorMessage(response));
+	return (await response.json()) as AgentStepResponse;
 }

@@ -3,7 +3,8 @@ import { listWeeks } from "../engine/score/calendar.ts";
 import { fmtDay } from "../engine/score/narrate.ts";
 import { addDays, isoDay } from "../shared/dates.ts";
 import { SCENARIOS, type Scenario } from "../shared/scenarios.ts";
-import type { Comp, PlanProgress, PlanResult, SlateSnapshot } from "../shared/types.ts";
+import type { AgentPlan, Comp, PlanProgress, PlanResult, SlateSnapshot } from "../shared/types.ts";
+import { AgentPanel } from "./Agent.tsx";
 import { runPlan, searchFilms } from "./api.ts";
 import { PlanView } from "./PlanView.tsx";
 
@@ -14,6 +15,8 @@ export interface Setup {
 	/** Earliest week you could open. */
 	from: string;
 	scenario?: string;
+	/** Set when the agent chose this plan. */
+	agent?: boolean;
 }
 
 type Run = { status: "idle" } | { status: "running"; progress?: PlanProgress } | { status: "ready"; result: PlanResult } | { status: "error"; message: string };
@@ -126,10 +129,7 @@ function Intro({ slate }: { slate?: SlateSnapshot }) {
 			<div aria-hidden className="marquee-bulbs h-[18px] border-b border-line bg-marquee/5" />
 			<div className="flex flex-col gap-4 px-5 py-8 sm:px-9">
 				<p className="font-mono text-xs tracking-[0.16em] text-marquee uppercase">Qloo Agentic Hackathon</p>
-				<h1
-					id="intro"
-					className="font-display text-[clamp(52px,7vw,112px)] leading-[0.88] tracking-[0.01em] text-marquee [text-shadow:0_0_32px_rgb(242_182_50/0.3)]"
-				>
+				<h1 id="intro" className="font-display text-[clamp(52px,7vw,112px)] leading-[0.88] tracking-[0.01em] text-marquee [text-shadow:0_0_32px_rgb(242_182_50/0.3)]">
 					Find the week your audience is free
 				</h1>
 				<p className="max-w-2xl text-pretty text-ink-2">
@@ -147,7 +147,7 @@ function Intro({ slate }: { slate?: SlateSnapshot }) {
 	);
 }
 
-export function Planner({ slate }: { slate?: SlateSnapshot }) {
+export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent: boolean }) {
 	const weeks = useMemo(() => (slate ? listWeeks(slate.windowStart, slate.windowEnd) : []), [slate]);
 	const defaultFrom = useMemo(() => weeks.find((w) => w >= addDays(isoDay(new Date()), 28)) ?? weeks[0] ?? "", [weeks]);
 	const films = useMemo(() => (slate?.titles ?? []).filter((t) => t.kind === "film"), [slate]);
@@ -163,11 +163,15 @@ export function Planner({ slate }: { slate?: SlateSnapshot }) {
 		abort.current = controller;
 		setSetup(next);
 		setRun({ status: "running" });
-		const url = new URL(location.href);
-		if (next.scenario) url.searchParams.set("scenario", next.scenario);
-		else url.searchParams.delete("scenario");
-		history.replaceState(null, "", url);
-		requestAnimationFrame(() => results.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+		// The agent keeps its own share link (?run=) and stays in view while it writes its answer.
+		if (!next.agent) {
+			const url = new URL(location.href);
+			if (next.scenario) url.searchParams.set("scenario", next.scenario);
+			else url.searchParams.delete("scenario");
+			url.searchParams.delete("run");
+			history.replaceState(null, "", url);
+			requestAnimationFrame(() => results.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+		}
 		runPlan({ comps: next.comps.map((c) => c.id), you: next.you }, (progress) => !controller.signal.aborted && setRun({ status: "running", progress }), controller.signal)
 			.then((result) => !controller.signal.aborted && setRun({ status: "ready", result }))
 			.catch((e: unknown) => !controller.signal.aborted && setRun({ status: "error", message: e instanceof Error ? e.message : String(e) }));
@@ -175,6 +179,11 @@ export function Planner({ slate }: { slate?: SlateSnapshot }) {
 
 	const pickScenario = useCallback(
 		(s: Scenario) => start({ comps: s.comps, you: s.you, from: s.from && weeks.includes(s.from) ? s.from : defaultFrom, scenario: s.id }),
+		[start, weeks, defaultFrom],
+	);
+
+	const fromAgent = useCallback(
+		(plan: AgentPlan) => start({ comps: plan.comps, you: plan.you, from: weeks.includes(plan.from) ? plan.from : defaultFrom, agent: true }),
 		[start, weeks, defaultFrom],
 	);
 
@@ -248,34 +257,40 @@ export function Planner({ slate }: { slate?: SlateSnapshot }) {
 				</section>
 			</aside>
 
-			<div ref={results} className="flex min-w-0 flex-[999_1_640px] flex-col gap-7">
-				{run.status === "idle" && <Intro slate={slate} />}
-				{run.status === "running" && (
-					<div className={`${card} flex flex-col gap-3 p-6`} role="status" aria-live="polite">
-						<p className="font-display text-3xl tracking-wide text-marquee">Scoring rivals against your audience…</p>
-						<p className="text-sm text-ink-2">
-							{run.progress
-								? `Qloo has scored ${run.progress.scored} of ${run.progress.total} titles (${run.progress.qlooCalls} Qloo call${run.progress.qlooCalls === 1 ? "" : "s"} so far).`
-								: "Reading the live calendar and the score cache."}
-						</p>
-						<div className="h-1.5 overflow-hidden rounded bg-line">
-							<div className="h-full rounded bg-marquee transition-all" style={{ width: `${run.progress ? Math.max(8, (run.progress.scored / run.progress.total) * 100) : 8}%` }} />
+			<div className="flex min-w-0 flex-[999_1_640px] flex-col gap-7">
+				<AgentPanel enabled={agent} onPlan={fromAgent} />
+				<div ref={results} className="flex flex-col gap-7">
+					{run.status === "idle" && <Intro slate={slate} />}
+					{run.status === "running" && (
+						<div className={`${card} flex flex-col gap-3 p-6`} role="status" aria-live="polite">
+							<p className="font-display text-3xl tracking-wide text-marquee">Scoring rivals against your audience…</p>
+							<p className="text-sm text-ink-2">
+								{run.progress
+									? `Qloo has scored ${run.progress.scored} of ${run.progress.total} titles (${run.progress.qlooCalls} Qloo call${run.progress.qlooCalls === 1 ? "" : "s"} so far).`
+									: "Reading the live calendar and the score cache."}
+							</p>
+							<div className="h-1.5 overflow-hidden rounded bg-line">
+								<div
+									className="h-full rounded bg-marquee transition-all"
+									style={{ width: `${run.progress ? Math.max(8, (run.progress.scored / run.progress.total) * 100) : 8}%` }}
+								/>
+							</div>
 						</div>
-					</div>
-				)}
-				{run.status === "error" && (
-					<div className={`${card} border-hot/60 p-6`} role="alert">
-						<p className="text-ink">{run.message}</p>
-						{setup && (
-							<button type="button" onClick={() => start(setup)} className="mt-3 min-h-11 rounded-[10px] border border-line px-4 text-sm hover:border-marquee">
-								Try again
-							</button>
-						)}
-					</div>
-				)}
-				{run.status === "ready" && setup && (
-					<PlanView key={`${setup.scenario ?? "custom"}-${run.result.comps.join()}-${setup.you ?? ""}-${setup.from}`} result={run.result} setup={setup} weeks={weeks} />
-				)}
+					)}
+					{run.status === "error" && (
+						<div className={`${card} border-hot/60 p-6`} role="alert">
+							<p className="text-ink">{run.message}</p>
+							{setup && (
+								<button type="button" onClick={() => start(setup)} className="mt-3 min-h-11 rounded-[10px] border border-line px-4 text-sm hover:border-marquee">
+									Try again
+								</button>
+							)}
+						</div>
+					)}
+					{run.status === "ready" && setup && (
+						<PlanView key={`${setup.scenario ?? "custom"}-${run.result.comps.join()}-${setup.you ?? ""}-${setup.from}`} result={run.result} setup={setup} weeks={weeks} />
+					)}
+				</div>
 			</div>
 		</div>
 	);

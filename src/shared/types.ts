@@ -119,3 +119,39 @@ export interface PlanResult {
 }
 
 export type PlanResponse = PlanProgress | PlanResult;
+
+/** What the agent planned with, so the page can render the same plan. */
+export interface AgentPlan {
+	comps: Comp[];
+	you?: string;
+	from: string;
+}
+
+export type AgentEvent =
+	| { type: "call"; id: string; tool: string; label: string }
+	| { type: "result"; id: string; tool: string; summary: string; error?: boolean }
+	| { type: "progress"; text: string }
+	| { type: "thought"; text: string }
+	| {
+			type: "answer";
+			text: string;
+			/** Dates in the answer checked against this run's tool results. */
+			check: { dates: number; unverified: string[] };
+			costUsd: number;
+			modelCalls: number;
+			model?: string;
+			tokens?: { input: number; cached: number; output: number };
+	  }
+	| { type: "error"; text: string };
+
+export interface AgentStepResponse {
+	runId: string;
+	done: boolean;
+	/** Events after the `after` index the client sent. */
+	events: AgentEvent[];
+	total: number;
+	plan?: AgentPlan;
+	question: string;
+	/** True when a finished run of the same question was replayed at no model cost. */
+	replay?: boolean;
+}

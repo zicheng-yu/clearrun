@@ -73,7 +73,7 @@ export function App() {
 			<main className="mx-auto max-w-[1360px] px-4 pt-7 pb-12 sm:px-8">
 				{slate.error && <p className="mb-6 rounded-xl border border-line bg-stage p-4 text-ink-2">{slate.error}</p>}
 				<div hidden={tab !== "plan"}>
-					<Planner slate={slate.data} />
+					<Planner slate={slate.data} agent={health.data?.modes.agent === "llm"} />
 				</div>
 				<div hidden={tab !== "slate"}>
 					<SlateList slate={slate.data} />

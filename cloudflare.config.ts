@@ -26,8 +26,10 @@ export default defineConfig(({ mode }) => {
 			},
 			env: {
 				QLOO_MODE: bindings.text<"mock" | "live">(mock ? "mock" : "live"),
-				// "scripted" runs the deterministic planner; "llm" runs the agent over OpenRouter.
-				AGENT_MODE: bindings.text<"scripted" | "llm">("scripted"),
+				// "llm" runs the agent over OpenRouter; "scripted" turns it off (the planner still works).
+				AGENT_MODE: bindings.text<"scripted" | "llm">("llm"),
+				// Agent runs one client may start per UTC day (replays of an answered question are free).
+				AGENT_DAILY_RUNS: bindings.text("12"),
 				// OpenRouter model IDs: the agent's model and the fallbacks tried when its providers fail.
 				LLM_MODEL: bindings.text("anthropic/claude-haiku-5.5"),
 				LLM_FALLBACK_MODELS: bindings.text("deepseek/deepseek-v4-flash"),

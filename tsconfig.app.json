@@ -23,6 +23,8 @@
 	"include": [
 		"src/client",
 		"src/shared",
-		"src/engine/score"
+		"src/engine/score",
+		"src/engine/explain",
+		"src/engine/agent"
 	]
 }

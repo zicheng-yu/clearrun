@@ -1,6 +1,8 @@
 import { Hono, type Context } from "hono";
-import { DEFAULT_MODEL } from "./openrouter.ts";
-import { PlanInputError, planStep, SlateNotReadyError } from "./plan.ts";
+import { AgentInputError, AgentLimitError, agentRun, agentStep } from "./agent.ts";
+import { audienceOf, compareWithRival } from "./explain.ts";
+import { DEFAULT_MODEL, LlmError, type LlmConfig } from "./openrouter.ts";
+import { normalizeComps, PlanInputError, planStep, SlateNotReadyError } from "./plan.ts";
 import { QlooClient, QlooError, QlooQuotaError, searchFilms } from "./qloo.ts";
 import type { Health } from "../shared/types.ts";
 import { runSlateStep, JOB_NAME, type SlateJobState } from "./slate-job.ts";
@@ -27,7 +29,36 @@ function qlooFor(env: Env): QlooClient | undefined {
 	});
 }
 
-/** Per-IP limit on routes that can spend Qloo quota. */
+/** The agent's model settings when the LLM agent is on and its key is present. */
+function llmFor(env: Env): LlmConfig | undefined {
+	const apiKey = env.OPENROUTER_API_KEY?.trim();
+	if (env.AGENT_MODE !== "llm" || !apiKey) return undefined;
+	return {
+		apiKey,
+		model: env.LLM_MODEL || DEFAULT_MODEL,
+		fallbackModels: (env.LLM_FALLBACK_MODELS ?? "")
+			.split(",")
+			.map((m) => m.trim())
+			.filter(Boolean),
+		maxTokens: 1200,
+		dailyUsd: numberOr(env.LLM_DAILY_USD, 0.4),
+		totalUsd: numberOr(env.LLM_TOTAL_USD, 5),
+		appUrl: "https://clearrun.zichengyu.com",
+	};
+}
+
+/** A short hash of the client address: enough to cap runs per client without storing the address. */
+async function clientKey(c: AppContext): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`clearrun:${c.req.header("cf-connecting-ip") ?? "local"}`));
+	return [...new Uint8Array(digest)]
+		.slice(0, 8)
+		.map((b) => b.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+const QLOO_ID = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
+
+/** Per-IP limit on routes that can spend Qloo quota or model budget. */
 async function rateLimited(c: AppContext): Promise<boolean> {
 	const { success } = await c.env.RATE_LIMITER.limit({ key: c.req.header("cf-connecting-ip") ?? "local" });
 	return !success;
@@ -40,7 +71,7 @@ function log(message: string, fields: Record<string, unknown> = {}): void {
 app.get("/health", async (c) => {
 	const env = c.env;
 	const [snapshot, job, spend, usage] = await Promise.all([latestSnapshot(env.DB), loadJob<SlateJobState>(env.DB, JOB_NAME), llmSpend(env.DB), qlooUsage(env.DB)]);
-	const agent = env.AGENT_MODE === "llm" && env.OPENROUTER_API_KEY ? "llm" : "scripted";
+	const agent = llmFor(env) ? "llm" : "scripted";
 	const body: Health = {
 		name: "Clear Run",
 		modes: { qloo: qlooFor(env) ? "live" : "mock", agent, model: agent === "llm" ? env.LLM_MODEL || DEFAULT_MODEL : undefined },
@@ -94,6 +125,75 @@ app.post("/plan", async (c) => {
 		}
 		throw error;
 	}
+});
+
+/** Why a rival overlaps: taste tags the comps share with it (Qloo compare, cached 7 days). */
+app.get("/explain", async (c) => {
+	const rival = c.req.query("rival") ?? "";
+	let comps: string[];
+	try {
+		comps = normalizeComps((c.req.query("comps") ?? "").split(","));
+	} catch (error) {
+		return c.json({ error: "bad_request", message: (error as Error).message }, 400);
+	}
+	if (!QLOO_ID.test(rival)) return c.json({ error: "bad_request", message: "rival must be a Qloo entity ID" }, 400);
+	if (await rateLimited(c)) return c.json({ error: "rate_limited", message: "Too many requests from this address. Try again in a minute." }, 429);
+	const qloo = qlooFor(c.env);
+	if (!qloo) return c.json({ error: "unavailable", message: "Live Qloo data is off here." }, 503);
+	try {
+		return c.json(await compareWithRival(qloo, comps, rival.toUpperCase()), 200, { "Cache-Control": "public, max-age=3600" });
+	} catch (error) {
+		if (error instanceof QlooQuotaError) return c.json({ error: "quota", message: error.message }, 503);
+		if (error instanceof QlooError) return c.json({ error: "qloo_unavailable", message: "Qloo didn't answer. Try again in a moment." }, 502);
+		throw error;
+	}
+});
+
+/** Age and gender skew of the comps' fans (Qloo demographics, cached 7 days). */
+app.get("/audience", async (c) => {
+	let comps: string[];
+	try {
+		comps = normalizeComps((c.req.query("comps") ?? "").split(","));
+	} catch (error) {
+		return c.json({ error: "bad_request", message: (error as Error).message }, 400);
+	}
+	if (await rateLimited(c)) return c.json({ error: "rate_limited", message: "Too many requests from this address. Try again in a minute." }, 429);
+	const qloo = qlooFor(c.env);
+	if (!qloo) return c.json({ profile: null });
+	try {
+		return c.json({ profile: await audienceOf(qloo, comps) }, 200, { "Cache-Control": "public, max-age=3600" });
+	} catch (error) {
+		if (error instanceof QlooQuotaError || error instanceof QlooError) return c.json({ profile: null });
+		throw error;
+	}
+});
+
+/** One step of an agent run: start one with {question}, then repeat with {runId, after} until done. */
+app.post("/agent/step", async (c) => {
+	const llm = llmFor(c.env);
+	if (!llm) return c.json({ error: "agent_off", message: "The AI agent is off right now. The planner below works without it." }, 503);
+	if (await rateLimited(c)) return c.json({ error: "rate_limited", message: "Too many requests from this address. Try again in a minute." }, 429);
+	const body = await c.req.json<{ question?: unknown; runId?: unknown; after?: unknown }>().catch(() => undefined);
+	if (!body) return c.json({ error: "bad_request", message: "Expected a JSON body" }, 400);
+	try {
+		const ctx = { db: c.env.DB, qloo: qlooFor(c.env), llm, client: await clientKey(c), dailyRuns: numberOr(c.env.AGENT_DAILY_RUNS, 12) };
+		return c.json(await agentStep(ctx, body), 200, { "Cache-Control": "no-store" });
+	} catch (error) {
+		if (error instanceof AgentInputError) return c.json({ error: "bad_request", message: error.message }, 400);
+		if (error instanceof AgentLimitError) return c.json({ error: "limit", message: error.message }, 429);
+		if (error instanceof SlateNotReadyError) return c.json({ error: "slate_not_ready", message: error.message }, 503);
+		if (error instanceof LlmError) {
+			log("llm error", { status: error.status });
+			return c.json({ error: "model_unavailable", message: "The model didn't answer. Try again in a moment." }, 502);
+		}
+		throw error;
+	}
+});
+
+/** A stored run, for share links (?run=). No model calls. */
+app.get("/agent/run", async (c) => {
+	const run = await agentRun(c.env.DB, c.req.query("id") ?? "");
+	return run ? c.json(run, 200, { "Cache-Control": "public, max-age=60" }) : c.json({ error: "not_found" }, 404);
 });
 
 /** Released films by name, for picking comps. Cached for 7 days per query. */

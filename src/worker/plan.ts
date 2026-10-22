@@ -31,7 +31,8 @@ export function normalizeComps(comps: unknown): string[] {
 const rivalId = (t: SlateTitle) => `${t.id}@${t.date}`;
 const unique = (ids: string[]) => [...new Set(ids.map((id) => id.toUpperCase()))];
 
-export async function planStep(ctx: { db: D1Database; qloo?: QlooClient }, input: { comps?: unknown; you?: unknown }): Promise<PlanResponse> {
+/** `maxCalls` caps this step's Qloo calls (the agent shares one scoring step per request across its tools). */
+export async function planStep(ctx: { db: D1Database; qloo?: QlooClient }, input: { comps?: unknown; you?: unknown }, options: { maxCalls?: number } = {}): Promise<PlanResponse> {
 	const comps = normalizeComps(input.comps);
 	const signal = comps.join(",");
 	const snapshot = await latestSnapshot(ctx.db);
@@ -55,10 +56,11 @@ export async function planStep(ctx: { db: D1Database; qloo?: QlooClient }, input
 	let calls = 0;
 	let notice: string | undefined;
 	const todo = missing();
-	if (ctx.qloo && (todo.movie.length > 0 || todo.videogame.length > 0)) {
+	if (ctx.qloo && (options.maxCalls ?? CALLS_PER_STEP) > 0 && (todo.movie.length > 0 || todo.videogame.length > 0)) {
 		const jobs: { domain: AffinityDomain; ids: string[] }[] = [];
-		for (let i = 0; i < todo.movie.length && jobs.length < CALLS_PER_STEP; i += FILM_BATCH) jobs.push({ domain: "movie", ids: todo.movie.slice(i, i + FILM_BATCH) });
-		if (todo.videogame.length > 0 && jobs.length < CALLS_PER_STEP) jobs.push({ domain: "videogame", ids: todo.videogame });
+		const limit = Math.min(CALLS_PER_STEP, options.maxCalls ?? CALLS_PER_STEP);
+		for (let i = 0; i < todo.movie.length && jobs.length < limit; i += FILM_BATCH) jobs.push({ domain: "movie", ids: todo.movie.slice(i, i + FILM_BATCH) });
+		if (todo.videogame.length > 0 && jobs.length < limit) jobs.push({ domain: "videogame", ids: todo.videogame });
 		const qloo = ctx.qloo;
 		try {
 			const found = await Promise.all(

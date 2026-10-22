@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { Comparison } from "../engine/explain/compare.ts";
+import { AGE_BANDS, AGE_LABELS, type AudienceProfile } from "../engine/explain/demographics.ts";
 import { DECAY, eligibleWeeks, lastFullRun, planCalendar, recommend, verdict, YOUR_RUN, type Recommendation, type Verdict, type WeekScore } from "../engine/score/calendar.ts";
 import { fmtDay, narrate, percentLabel, runPhrase, topThreats } from "../engine/score/narrate.ts";
 import { addDays } from "../shared/dates.ts";
 import { ANCHOR_GAMES } from "../shared/games.ts";
 import type { PlanResult, RivalScore } from "../shared/types.ts";
+import { fetchAudience, fetchExplain } from "./api.ts";
 import type { Setup } from "./Planner.tsx";
 import { wikiUrl } from "./SlateList.tsx";
 
@@ -75,7 +78,70 @@ function scoreNote(r: RivalScore): string {
 	return "Content-based score: an unreleased film is scored from its metadata (genre, keywords, talent), not from viewing behavior. The percentile ranks it among every scored film on the slate.";
 }
 
-function RivalDetail(props: { rival: RivalScore; movedFrom?: string; onShift: (weeks: number) => void; onRemove: () => void; onUndo: () => void; onClose: () => void }) {
+function TagList({ label, tags, strong }: { label: string; tags: string[]; strong?: boolean }) {
+	if (tags.length === 0) return null;
+	return (
+		<div className="flex flex-col gap-1.5">
+			<span className="text-xs text-muted">{label}</span>
+			<ul className="flex flex-wrap gap-1.5">
+				{tags.map((t) => (
+					<li key={t} className={`rounded-full border px-2.5 py-0.5 text-xs ${strong ? "border-marquee/50 bg-marquee/10 text-ink" : "border-line text-ink-2"}`}>
+						{t}
+					</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+/** Qloo taste tags the comps share with the rival (or with a game's proxy), and tags only one side has. */
+function WhyOverlap({ comps, rival }: { comps: string[]; rival: RivalScore }) {
+	const [state, setState] = useState<{ data?: Comparison; error?: string }>({});
+	const target = rival.qlooId;
+	const key = comps.join();
+	useEffect(() => {
+		if (!target) return;
+		const controller = new AbortController();
+		setState({});
+		fetchExplain(key.split(","), target, controller.signal)
+			.then((data) => setState({ data }))
+			.catch((e: unknown) => !controller.signal.aborted && setState({ error: e instanceof Error ? e.message : String(e) }));
+		return () => controller.abort();
+	}, [key, target]);
+	if (!target) return null;
+	const via = rival.kind === "game" && rival.proxy ? ` (through ${rival.proxy.name})` : "";
+	return (
+		<div className="mt-4 flex flex-col gap-3 border-t border-dashed border-line pt-4">
+			<h4 className="text-[13px] font-semibold">Why they overlap{via}</h4>
+			{state.error ? (
+				<p className="text-xs text-hot">{state.error}</p>
+			) : !state.data ? (
+				<p className="text-xs text-muted">Comparing taste tags in Qloo…</p>
+			) : state.data.shared.length === 0 && state.data.onlyYours.length === 0 && state.data.onlyTheirs.length === 0 ? (
+				<p className="text-xs text-muted">Qloo has no tags to compare for this pair.</p>
+			) : (
+				<>
+					<TagList label="Taste tags your comps share with it" tags={state.data.shared.map((t) => t.name)} strong />
+					<div className="grid gap-3 sm:grid-cols-2">
+						<TagList label="Only your comps" tags={state.data.onlyYours.slice(0, 6).map((t) => t.name)} />
+						<TagList label={`Only ${rival.kind === "game" && rival.proxy ? rival.proxy.name : rival.title}`} tags={state.data.onlyTheirs.slice(0, 6).map((t) => t.name)} />
+					</div>
+					<p className="text-[11px] text-muted">From Qloo's compare analysis. Tags for unreleased titles come from their metadata.</p>
+				</>
+			)}
+		</div>
+	);
+}
+
+function RivalDetail(props: {
+	rival: RivalScore;
+	comps: string[];
+	movedFrom?: string;
+	onShift: (weeks: number) => void;
+	onRemove: () => void;
+	onUndo: () => void;
+	onClose: () => void;
+}) {
 	const { rival } = props;
 	const button = "min-h-9 rounded-lg border border-line px-2.5 text-xs text-ink-2 hover:border-marquee";
 	return (
@@ -102,7 +168,8 @@ function RivalDetail(props: { rival: RivalScore; movedFrom?: string; onShift: (w
 				</div>
 			</dl>
 			<p className="mt-3 text-xs text-muted">{scoreNote(rival)}</p>
-			<div className="mt-3 flex flex-wrap gap-2">
+			<WhyOverlap comps={props.comps} rival={rival} />
+			<div className="mt-4 flex flex-wrap gap-2">
 				<span className="self-center text-xs text-muted">What if it moved?</span>
 				<button type="button" className={button} onClick={() => props.onShift(-1)}>
 					← 1 week earlier
@@ -163,7 +230,11 @@ function PickList(props: {
 				<ol className="-ml-2.5 flex flex-col">
 					{props.weeks.map((w) => (
 						<li key={w} className="flex items-center gap-2">
-							<button type="button" onClick={() => props.onSelect(w)} className="flex min-h-11 min-w-0 flex-1 flex-col justify-center rounded-lg px-2.5 py-1.5 text-left hover:bg-line/50">
+							<button
+								type="button"
+								onClick={() => props.onSelect(w)}
+								className="flex min-h-11 min-w-0 flex-1 flex-col justify-center rounded-lg px-2.5 py-1.5 text-left hover:bg-line/50"
+							>
 								<span className="font-mono text-sm">Week of {fmtDay(w)}</span>
 								<span className="text-xs text-muted">{props.detail(w)}</span>
 							</button>
@@ -351,8 +422,8 @@ function PressureCalendar(props: {
 						Pressure calendar
 					</h2>
 					<p className="text-sm text-pretty text-ink-2">
-						How much of your audience's attention is already spoken for if you open that week, across your first four weeks. 100 is the busiest week you could open in. Pick a
-						week to see who is behind it.
+						How much of your audience's attention is already spoken for if you open that week, across your first four weeks. 100 is the busiest week you could open in. Pick a week
+						to see who is behind it.
 					</p>
 				</div>
 				<ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-ink-2">
@@ -423,7 +494,11 @@ function PressureCalendar(props: {
 					</div>
 					<div className="grid gap-1" style={columns}>
 						{months.map((m) => (
-							<span key={m.label} style={{ gridColumn: `span ${m.span}` }} className="border-t border-line pt-1.5 font-mono text-[11px] tracking-[0.08em] whitespace-nowrap text-muted uppercase">
+							<span
+								key={m.label}
+								style={{ gridColumn: `span ${m.span}` }}
+								className="border-t border-line pt-1.5 font-mono text-[11px] tracking-[0.08em] whitespace-nowrap text-muted uppercase"
+							>
 								{m.label}
 							</span>
 						))}
@@ -570,6 +645,64 @@ function WeekDetail(props: {
 			<p className="text-xs text-muted">
 				Share is each rival's part of this week's pressure. Bars: overlap percentile (amber) and attention size (grey). Unscored rivals add buzz, not pressure.
 			</p>
+		</section>
+	);
+}
+
+/** One diverging bar: an index from −1 to 1 around a zero hairline. */
+function IndexBar({ label, value, left, right }: { label: string; value: number; left?: string; right?: string }) {
+	const width = `${Math.min(1, Math.abs(value)) * 50}%`;
+	const text = `${value > 0 ? "+" : ""}${value.toFixed(2)}`;
+	return (
+		<div className="grid grid-cols-[6.5rem_1fr_3.5rem] items-center gap-3" title={`${label}: ${text}`}>
+			<span className="text-[13px] text-ink-2">{label}</span>
+			<span className="relative flex h-5 items-center">
+				{left && <span className="absolute left-0 font-mono text-[10px] text-muted uppercase">{left}</span>}
+				{right && <span className="absolute right-0 font-mono text-[10px] text-muted uppercase">{right}</span>}
+				<span aria-hidden className="absolute inset-y-0 left-1/2 w-px bg-line" />
+				<span aria-hidden className={`absolute h-2.5 bg-marquee ${value >= 0 ? "left-1/2 rounded-r-[4px]" : "right-1/2 rounded-l-[4px]"}`} style={{ width }} />
+			</span>
+			<span className="text-right font-mono text-xs text-ink-2 tabular-nums">{text}</span>
+		</div>
+	);
+}
+
+/** Who your comps' fans are: Qloo's age and gender indexes, relative to the general population. */
+function Audience({ comps, names }: { comps: string[]; names: string[] }) {
+	const [state, setState] = useState<{ profile?: AudienceProfile | null; error?: string }>({});
+	const key = comps.join();
+	useEffect(() => {
+		const controller = new AbortController();
+		fetchAudience(key.split(","), controller.signal)
+			.then((profile) => setState({ profile }))
+			.catch((e: unknown) => !controller.signal.aborted && setState({ error: e instanceof Error ? e.message : String(e) }));
+		return () => controller.abort();
+	}, [key]);
+	if (state.profile === null || state.error) return null;
+	const p = state.profile;
+	return (
+		<section aria-labelledby="audience" className={`${card} flex flex-col gap-4 px-4 py-6 sm:px-8`}>
+			<div className="flex flex-col gap-1.5">
+				<h2 id="audience" className="font-display text-4xl leading-none tracking-wide">
+					Your audience
+				</h2>
+				<p className="text-sm text-pretty text-ink-2">
+					{p ? `${p.summary}. ` : ""}Qloo's age and gender indexes for fans of {names.join(" and ")}, against the general population (0 is average). Unreleased titles have no
+					demographics yet, which is why your audience is described by released comps.
+				</p>
+			</div>
+			{!p ? (
+				<p className="text-xs text-muted">Loading demographics…</p>
+			) : (
+				<div className="flex max-w-xl flex-col gap-1.5">
+					{AGE_BANDS.map((b) => (
+						<IndexBar key={b} label={AGE_LABELS[b]} value={p.age[b]} />
+					))}
+					<div className="mt-2 border-t border-line pt-3">
+						<IndexBar label="Gender" value={p.male} left="Female" right="Male" />
+					</div>
+				</div>
+			)}
 		</section>
 	);
 }
@@ -802,6 +935,7 @@ export function PlanView({ result, setup, weeks }: { result: PlanResult; setup: 
 					renderRival={(open) => (
 						<RivalDetail
 							rival={open}
+							comps={result.comps}
 							movedFrom={whatIf.moves[open.id] ? original.get(open.id)?.week : undefined}
 							onShift={(d) => shift(open.id, d)}
 							onRemove={() => {
@@ -822,6 +956,8 @@ export function PlanView({ result, setup, weeks }: { result: PlanResult; setup: 
 			)}
 
 			<TopRivals rivals={rivals} from={from} onOpen={openFor} />
+
+			<Audience comps={result.comps} names={compNames} />
 
 			<Method result={result} />
 		</div>
