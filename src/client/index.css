@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@theme {
+	--font-display: "Bebas Neue", Impact, "Arial Narrow", sans-serif;
+	--font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+	/* Auditorium dark with marquee amber */
+	--color-house: #0e0e11;
+	--color-stage: #17171c;
+	--color-line: #2a2a31;
+	--color-ink: #f4f1ea;
+	--color-ink-2: #c9c4b9;
+	--color-muted: #9a958b;
+	--color-marquee: #f2b632;
+	--color-marquee-ink: #1a1405;
+}
+
+@layer base {
+	:root {
+		color-scheme: dark;
+	}
+	body {
+		@apply bg-house text-ink font-sans antialiased;
+	}
+}

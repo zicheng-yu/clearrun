@@ -1,0 +1,27 @@
+{
+	"compilerOptions": {
+		"target": "es2022",
+		"lib": [
+			"es2023",
+			"dom",
+			"dom.iterable"
+		],
+		"module": "preserve",
+		"moduleResolution": "bundler",
+		"jsx": "react-jsx",
+		"types": [
+			"vite/client"
+		],
+		"strict": true,
+		"noEmit": true,
+		"allowImportingTsExtensions": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true,
+		"skipLibCheck": true,
+		"erasableSyntaxOnly": true
+	},
+	"include": [
+		"src/client",
+		"src/shared"
+	]
+}
