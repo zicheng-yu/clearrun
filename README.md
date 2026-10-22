@@ -4,7 +4,7 @@
 
 Built for the [Qloo Agentic Hackathon](https://qloo.devpost.com/) (2026). Live at **https://clearrun.zichengyu.com**.
 
-> Status: live. Ask the release agent a question in plain English, pick a featured scenario (Dunesday, GTA VI week, a family slot, indie horror), or describe your audience with released comps. Clear Run scores every rival on the live calendar, explains the overlap with Qloo taste tags, recommends weeks, and watches the plan: after every daily refresh it re-plans and logs what changed. Next to each agent answer, the same model with no tools answers the same question, and its dates are checked against the slate.
+> Status: live. Ask the release agent a question in plain English, pick a featured scenario (Dunesday, GTA VI week, a family slot, indie horror), or describe your audience with released comps. Clear Run scores every rival on the live calendar, explains the overlap with Qloo taste tags, recommends weeks, and watches the plan: after every daily refresh it re-plans and logs what changed. Next to each agent answer, the same model with no tools answers the same question, and its dates are checked against the slate. The Backtests tab re-runs three same-day openings (Barbenheimer, Glicked, Sonic 3 and Mufasa) as Clear Run would have seen them eight weeks earlier. With no keys at all, `npm run dev:mock` runs the whole app on a frozen calendar and synthetic scores.
 
 ## How it works
 
@@ -45,6 +45,33 @@ Built for the [Qloo Agentic Hackathon](https://qloo.devpost.com/) (2026). Live a
    - The audience's biggest rivals that it never mentions are counted.
    - Its own recommended date is rated on the live calendar for the agent's audience.
 
+10. **Backtests** (`src/engine/backtest`, `src/worker/backtest.ts`, the Backtests tab):
+    - Three pairs of films that opened the same day: Barbie and Oppenheimer (Jul 21, 2023), Wicked and Gladiator II (Nov 22, 2024), and Sonic the Hedgehog 3 and Mufasa: The Lion King (Dec 20, 2024).
+    - Each pair is re-planned eight weeks before its opening. The calendar is Wikipedia's for the next 24 weeks: the 60 titles with the most pageviews in the 30 days before that day, sized by those pageviews.
+    - Each film is its own audience: its Qloo entity is the signal and every other title is a rival.
+      - "Before release" scores the rivals with `bias.content_based=1`, as the live planner does for films that aren't out yet.
+      - "Today" uses Qloo's behavioral graph, which includes everything audiences did after release.
+    - A resumable job stores the results (two Qloo calls per step, about 35 in all), and the page only reads them.
+    - Claims stop at taste overlap: there's no license-clean box-office data in this stack.
+11. **Offline demo and fallbacks:**
+    - `npm run dev:mock` runs the whole app with no keys, and the Worker makes no outside requests. It has three parts:
+      - a frozen copy of the live slate (Oct 2026);
+      - a synthetic Qloo (`src/engine/qloo/mock`) that answers in Qloo's response shapes from genre tags;
+      - the scripted agent.
+
+      The demo keeps its own local database. It seeds itself on the first request, including the featured watches and the backtests, and it says on every page that its scores are synthetic.
+    - The fixtures are built from open data only (`scripts/build-fixtures.ts`):
+      - Wikipedia dates and the first sentence of each film's article;
+      - Wikidata IDs and genres;
+      - Wikimedia pageviews.
+
+      Nothing in them comes from a Qloo response.
+    - **Scripted planner** (`src/engine/agent/scripted.ts`):
+      - Fixed rules read the question: the dated title it names, comps after "like" or "fans of", and a start date.
+      - The same tools run in a fixed order, and a template writes the answer from `plan_release`'s result.
+      - It answers when there's no model. It also takes over a run when the model budget is spent or the model doesn't answer, and such runs aren't replayed.
+    - When Qloo can't be reached or a budget guard stops a call, older cached responses and scores are served, with a notice.
+
 Decay, seasonality and size scaling are assumptions, and the page labels them as such. Pressure is a relative index, not a box-office forecast.
 
 TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
@@ -64,6 +91,7 @@ TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
 | `POST /api/watch` | `{comps, you?, from, week}`: start watching a plan |
 | `GET /api/watch?id=` | A watch: its current state and change log |
 | `POST /api/watch/simulate` | `{id, rival, to}`: what the daily check would do if one rival moved (`to: null` takes it off the calendar) |
+| `GET /api/backtests` | The backtest cases, as stored by the backtest job (no Qloo calls) |
 | `GET /api/changes` | Date moves and new entrants between snapshots |
 | `GET /api/health` | Modes, slate status and budgets |
 
@@ -82,7 +110,11 @@ TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
 - **Watches:**
   - While the slate refresh runs, each cron tick runs one refresh step. Once it's done, each tick re-plans the three least recently checked watches against the new slate.
   - Simulations are cached per (watch, slate, change).
-- **Storage:** D1 holds snapshots, diffs, the Qloo caches, agent runs, watches and the spend ledgers. Nothing is kept in KV, whose free plan allows only 1,000 writes a day.
+- **Backtests:** the job runs in small steps (at most two Qloo calls each), from an admin call or an idle cron tick, and stores its results. The page costs one D1 read.
+- **Storage:** D1 holds snapshots, diffs, the Qloo caches, agent runs, watches, backtests and the spend ledgers. Nothing is kept in KV, whose free plan allows only 1,000 writes a day.
+- **Measured CPU** (production, Oct 22):
+  - 1–8 ms per request for cached reads and plan steps served from the cache;
+  - 10–60 ms for steps that scan large Qloo responses or call the model. The Free plan tolerates these as occasional overruns, and none has failed so far.
 - **Hard budgets:**
   - Qloo: 25,000 requests a month (half of a shared key) and 1,500 a day, with a reserve on the key's shared remaining count. A per-IP rate limit applies to `/api/plan` and `/api/search`.
   - LLM: OpenRouter with `anthropic/claude-haiku-5.5` at low reasoning effort and automatic prompt caching.
@@ -104,22 +136,45 @@ TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
   - Its own picks rank #17 of 19, #14 of 19, #7 of 13 and #11 of 19 by clear score on the live calendar.
   - For Dune: Part Three it recommends Dec 11, which rates pressure 91 for Dune fans; the agent recommends Mar 12 (pressure 29).
   - It also places Narnia on Thanksgiving; the film now opens Feb 12, 2027.
+- **Backtests** (production, Oct 22): the other film's rank for each audience, among the releases Qloo scored on that calendar.
+
+  | Audience → other film | Before release (content-based) | Today (behavioral) |
+  |---|---|---|
+  | Barbie → Oppenheimer | #41 of 59 | #12 of 59 |
+  | Oppenheimer → Barbie | #20 of 59 | #6 of 59 |
+  | Wicked → Gladiator II | #13 of 57 | #7 of 54 |
+  | Gladiator II → Wicked | #12 of 57 | #13 of 54 |
+  | Sonic the Hedgehog 3 → Mufasa | #5 of 58 | #2 of 53 |
+  | Mufasa → Sonic the Hedgehog 3 | #9 of 58 | #2 of 53 |
+
+  - Barbenheimer: Oppenheimer was a low-overlap rival for Barbie's audience before release, and the two audiences moved much closer once both films were out.
+    - A backtest on today's graph would already know how the release went.
+    - That's why Clear Run scores films that aren't out yet from content alone.
+  - Sonic 3 and Mufasa overlapped strongly in both views.
+  - Wicked and Gladiator II were already close before release (#12–13 of 57), and little changed after it.
+  - These are taste overlaps, not outcomes: no claim here is about grosses or about whether a date was right.
 
 ## Develop
 
 ```sh
 npm install
+npm run dev:mock                 # the offline demo: no keys, synthetic scores, the scripted agent
+npm test && npm run typecheck
+
+# Live data
 cp .dev.vars.example .dev.vars   # add QLOO_API_KEY, OPENROUTER_API_KEY, ADMIN_TOKEN
 npm run dev                      # then build a local slate: POST /api/admin/slate/step with x-admin-token, repeated until "done"
-npm test && npm run typecheck
 npx cf deploy --secrets-file .dev.vars
+# After a deploy, POST /api/admin/backtest/step until "done" (or let the cron run it); ?rebuild=1 recomputes the stored cases with no Qloo calls.
+
+node scripts/build-fixtures.ts   # rebuilds the demo and backtest fixtures from open data (Wikipedia, Wikidata, pageviews)
 ```
 
-Never commit keys or Qloo response data.
+Never commit keys or Qloo response data. The fixtures contain none: their only Qloo IDs are the featured comps' and the game proxies', already listed in `src/shared`.
 
 ## Data and attribution
 
-Release dates: Wikipedia (CC BY-SA 4.0), including each game's article. IDs: Wikidata (CC0). Attention: Wikimedia pageviews. Taste data by Qloo. Clear Run is not affiliated with any studio or publisher.
+Release dates: Wikipedia (CC BY-SA 4.0), including each game's article and the 2023–2025 lists behind the backtests. IDs and genres: Wikidata (CC0). Attention: Wikimedia pageviews. Taste data by Qloo; the offline demo's taste scores are synthetic. Clear Run is not affiliated with any studio or publisher.
 
 ## License
 
