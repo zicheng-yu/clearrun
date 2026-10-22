@@ -99,6 +99,11 @@ TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
   - Asked for "the 15 biggest releases, Nov – Mar", it named 5 of the slate's 15 most-watched films.
   - Full table: [docs/eval-baseline.md](docs/eval-baseline.md).
 - **The agent states only dates from its tools.** Every answer is checked, and the page shows the result.
+- **Side by side on the four example questions** (production, Oct 22), the model alone with the same question and no tools:
+  - It never mentions 17 of the 20 biggest rivals for those audiences (5 per audience).
+  - Its own picks rank #17 of 19, #14 of 19, #7 of 13 and #11 of 19 by clear score on the live calendar.
+  - For Dune: Part Three it recommends Dec 11, which rates pressure 91 for Dune fans; the agent recommends Mar 12 (pressure 29).
+  - It also places Narnia on Thanksgiving; the film now opens Feb 12, 2027.
 
 ## Develop
 
