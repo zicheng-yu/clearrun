@@ -7,12 +7,12 @@ import type { SlateSnapshot } from "../src/shared/types.ts";
 // Synthetic wikitext in the shape of Wikipedia's release tables, including the misspelled month label.
 const WIKITEXT = [
 	'! rowspan="3" style="text-align:center" data-sort-value="11" |<span aria-label="November">N<br>O<br>V</span>',
-	'| rowspan="2" style="text-align:center" | \'\'\'20\'\'\'',
+	"| rowspan=\"2\" style=\"text-align:center\" | '''20'''",
 	"| ''[[Film One]]'' || Studio A || Cast",
 	"|-",
 	"| ''[[Film Two (2026 film)|Film Two]]'' || Studio B || Cast",
 	'! rowspan="2" style="text-align:center" data-sort-value="12" |<span aria-label="Decmber">D<br>E<br>C</span>',
-	'| style="text-align:center" | \'\'\'18\'\'\'',
+	"| style=\"text-align:center\" | '''18'''",
 	"| ''[[Film Three]]'' || Studio C || Cast",
 	"| Not a title row",
 ].join("\n");

@@ -1,9 +1,11 @@
 /**
  * The slate refresh, as a resumable job of small steps. Each cron tick (or admin call) runs one
- * step, so every invocation stays inside the Workers Free plan: under 10 ms of CPU and well under
- * 50 external subrequests. A full refresh takes about 15 steps; a finished job restarts after 20 hours.
+ * step, so every invocation stays inside the Workers Free plan: a few milliseconds of CPU and well under
+ * 50 external subrequests. A full refresh takes about 20 steps; a finished job restarts after 20 hours.
+ * Qloo mappings carry over from the previous snapshot, so a daily refresh only looks up new titles.
  */
 import { addDays, isoDay, releaseWeek } from "../shared/dates.ts";
+import { GAMES } from "../shared/games.ts";
 import type { SlateSnapshot, SlateTitle } from "../shared/types.ts";
 import { diffSlates } from "../engine/slate/diff.ts";
 import { entitiesByExternal, type QlooClient, type QlooEntity } from "./qloo.ts";
@@ -38,6 +40,20 @@ function newJob(days: number, now = Date.now()): JobRow<SlateJobState> {
 		startedAt: now,
 		updatedAt: now,
 	};
+}
+
+/** Curated game tentpoles that open inside the window (films come from the Wikipedia lists). */
+function gamesIn(s: SlateJobState): SlateTitle[] {
+	return GAMES.filter((g) => g.date >= s.windowStart && g.date <= s.windowEnd).map((g) => ({
+		id: g.page,
+		kind: "game",
+		title: g.title,
+		page: g.page,
+		date: g.date,
+		week: releaseWeek(g.date),
+		proxy: g.proxy,
+		source: g.source,
+	}));
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -86,17 +102,19 @@ async function advance(ctx: StepContext, job: JobRow<SlateJobState>): Promise<Jo
 		}
 		case "lists": {
 			const section = s.sections[job.cursor];
-			if (!section) return next("qids");
-			const rows = parseFilmList(await sectionWikitext(section.page, section.index), section.year);
-			const seen = new Set(s.titles.map((t) => `${t.page}|${t.date}`));
 			const titles = [...s.titles];
-			for (const row of rows) {
-				if (row.date < s.windowStart || row.date > s.windowEnd || seen.has(`${row.page}|${row.date}`)) continue;
-				seen.add(`${row.page}|${row.date}`);
-				titles.push({ id: row.page, kind: "film", title: row.title, page: row.page, date: row.date, week: releaseWeek(row.date) });
+			if (section) {
+				const rows = parseFilmList(await sectionWikitext(section.page, section.index), section.year);
+				const seen = new Set(titles.map((t) => `${t.page}|${t.date}`));
+				for (const row of rows) {
+					if (row.date < s.windowStart || row.date > s.windowEnd || seen.has(`${row.page}|${row.date}`)) continue;
+					seen.add(`${row.page}|${row.date}`);
+					titles.push({ id: row.page, kind: "film", title: row.title, page: row.page, date: row.date, week: releaseWeek(row.date) });
+				}
 			}
 			const cursor = job.cursor + 1;
-			return cursor >= s.sections.length ? { ...next("qids"), state: { ...s, titles } } : { ...job, cursor, state: { ...s, titles } };
+			if (cursor < s.sections.length) return { ...job, cursor, state: { ...s, titles } };
+			return { ...next("qids"), state: { ...s, titles: [...titles, ...gamesIn(s)] } };
 		}
 		case "qids": {
 			const titles = s.titles.map((t) => ({ ...t }));
@@ -112,20 +130,31 @@ async function advance(ctx: StepContext, job: JobRow<SlateJobState>): Promise<Jo
 					}
 				}
 			}
+			// Carry Qloo mappings over from the previous snapshot; only new titles need lookups.
+			const previous = new Map(((await latestSnapshot(ctx.db))?.titles ?? []).filter((t) => t.kind === "film" && t.wikidata).map((t) => [t.wikidata, t]));
+			for (const t of titles) {
+				const before = t.kind === "film" && t.wikidata ? previous.get(t.wikidata) : undefined;
+				if (before?.qloo) t.qloo = before.qloo;
+				if (before?.imdb) t.imdb = before.imdb;
+			}
 			return { ...next("qloo-wd"), state: { ...s, titles } };
 		}
 		case "qloo-wd":
 		case "qloo-imdb": {
 			const source = job.phase === "qloo-wd" ? "wikidata" : "imdb";
 			const size = source === "wikidata" ? QLOO_WD_BATCH : QLOO_IMDB_BATCH;
-			const idOf = (t: SlateTitle) => (source === "wikidata" ? t.wikidata : t.imdb);
+			// Games are scored through their proxies, never their own (placeholder) Qloo entities.
+			const idOf = (t: SlateTitle) => (t.kind !== "film" ? undefined : source === "wikidata" ? t.wikidata : t.imdb);
 			// The cursor walks a list that never shrinks, so mapping titles mid-phase can't skip any.
 			const all = [...new Set(s.titles.map(idOf).filter((id): id is string => Boolean(id)))];
 			const ids = all.slice(job.cursor, job.cursor + size * 2);
 			if (ids.length === 0 || !ctx.qloo) return next(source === "wikidata" ? "imdb" : "views");
 			const mapped = new Set(s.titles.filter((t) => t.qloo).map(idOf));
 			const found = new Map<string, QlooEntity>();
-			for (const part of chunk(ids.filter((id) => !mapped.has(id)), size)) {
+			for (const part of chunk(
+				ids.filter((id) => !mapped.has(id)),
+				size,
+			)) {
 				for (const [k, v] of await entitiesByExternal(ctx.qloo, source, part)) found.set(k, v);
 			}
 			const titles = s.titles.map((t) => {
@@ -136,7 +165,7 @@ async function advance(ctx: StepContext, job: JobRow<SlateJobState>): Promise<Jo
 		}
 		case "imdb": {
 			const titles = s.titles.map((t) => ({ ...t }));
-			const qids = [...new Set(titles.filter((t) => !t.qloo && t.wikidata).map((t) => t.wikidata as string))];
+			const qids = [...new Set(titles.filter((t) => t.kind === "film" && !t.qloo && !t.imdb && t.wikidata).map((t) => t.wikidata as string))];
 			for (const batch of chunk(qids, 50)) {
 				const ids = await imdbIds(batch);
 				for (const t of titles) if (t.wikidata && ids.has(t.wikidata)) t.imdb = ids.get(t.wikidata);

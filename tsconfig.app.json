@@ -22,6 +22,7 @@
 	},
 	"include": [
 		"src/client",
-		"src/shared"
+		"src/shared",
+		"src/engine/score"
 	]
 }

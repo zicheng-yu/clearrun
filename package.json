@@ -4,7 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "cf dev",
-		"dev:live": "cf dev --mode live",
+		"dev:mock": "cf dev --mode mock",
 		"build": "cf build",
 		"deploy": "cf deploy",
 		"typecheck": "cf workers types && tsc -p tsconfig.worker.json && tsc -p tsconfig.app.json && tsc -p tsconfig.node.json",

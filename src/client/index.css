@@ -13,6 +13,11 @@
 	--color-muted: #9a958b;
 	--color-marquee: #f2b632;
 	--color-marquee-ink: #1a1405;
+
+	/* Plan signals: clear weeks, danger weeks, counter-programming */
+	--color-clear: #57d6a4;
+	--color-hot: #ff6a4d;
+	--color-counter: #7cc4ff;
 }
 
 @layer base {
@@ -21,5 +26,11 @@
 	}
 	body {
 		@apply bg-house text-ink font-sans antialiased;
+	}
+	html {
+		scroll-padding-top: 6rem;
+	}
+	summary {
+		cursor: pointer;
 	}
 }

@@ -13,6 +13,10 @@ export interface SlateTitle {
 	wikidata?: string;
 	imdb?: string;
 	qloo?: QlooRef;
+	/** Games only: a released predecessor that stands in for the unreleased game in Qloo. */
+	proxy?: QlooRef;
+	/** Games only: where the release date was checked. */
+	source?: string;
 	/** Wikipedia pageviews over the last 30 complete days: the shared attention unit. */
 	views30d?: number;
 }
@@ -55,6 +59,63 @@ export interface Health {
 	slate: { snapshotId?: string; createdAt?: number; stats?: SlateStats; job?: { phase: string; updatedAt: number; error?: string } };
 	budgets: {
 		llm: { todayUsd: number; totalUsd: number; dailyCapUsd: number; totalCapUsd: number };
-		qloo: { month: string; calls: number; cap: number; sharedRemaining?: number };
+		qloo: { month: string; calls: number; cap: number; today: number; dailyCap: number; sharedRemaining?: number };
 	};
 }
+
+/** A released title that describes your audience (Qloo signal). */
+export interface Comp {
+	id: string;
+	name: string;
+	year?: number;
+	/** Shorter display name, for long franchise titles. */
+	short?: string;
+}
+
+/** A rival as scored against one audience. Calendar math happens in `engine/score` (Worker and browser). */
+export interface RivalScore {
+	id: string;
+	kind: "film" | "game";
+	title: string;
+	page: string;
+	date: string;
+	week: string;
+	views30d?: number;
+	/** Attention size, 0.05–1: min–max of log10 pageviews across the slate. */
+	size: number;
+	/** Raw Qloo affinity of your audience for this rival (films) or for its proxy (games). */
+	affinity?: number;
+	/** Overlap percentile, 0–1: among scored films, or the proxy's place among anchor games. */
+	overlap?: number;
+	/** Qloo entity ID used for scoring (the film itself or the game's proxy). */
+	qlooId?: string;
+	proxy?: QlooRef;
+}
+
+export interface PlanRequest {
+	comps: string[];
+	/** Slate ID of your own title, when it is already dated; it is left out of the rivals. */
+	you?: string;
+}
+
+export interface PlanProgress {
+	status: "scoring";
+	scored: number;
+	total: number;
+	qlooCalls: number;
+}
+
+export interface PlanResult {
+	status: "ready";
+	snapshot: { id: string; createdAt: number; windowStart: string; windowEnd: string };
+	comps: string[];
+	you?: { id: string; title: string; date: string; week: string; page: string };
+	rivals: RivalScore[];
+	coverage: { films: number; mapped: number; scored: number; games: number; gamesScored: number };
+	/** Qloo requests this call made; repeat plans are served from the cache. */
+	qlooCalls: number;
+	/** Set when scoring stopped early (e.g., a Qloo budget guard) and some rivals are unscored. */
+	notice?: string;
+}
+
+export type PlanResponse = PlanProgress | PlanResult;
