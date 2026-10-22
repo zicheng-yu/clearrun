@@ -5,7 +5,7 @@ import { addDays, isoDay } from "../shared/dates.ts";
 import { SCENARIOS, type Scenario } from "../shared/scenarios.ts";
 import type { AgentPlan, Comp, PlanProgress, PlanResult, SlateSnapshot } from "../shared/types.ts";
 import { AgentPanel } from "./Agent.tsx";
-import { runPlan, searchFilms } from "./api.ts";
+import { fetchWatch, runPlan, searchFilms } from "./api.ts";
 import { PlanView } from "./PlanView.tsx";
 
 export interface Setup {
@@ -17,6 +17,8 @@ export interface Setup {
 	scenario?: string;
 	/** Set when the agent chose this plan. */
 	agent?: boolean;
+	/** The watch to show with this plan: a featured scenario's, or one opened from a ?watch= link. */
+	watchId?: string;
 }
 
 type Run = { status: "idle" } | { status: "running"; progress?: PlanProgress } | { status: "ready"; result: PlanResult } | { status: "error"; message: string };
@@ -168,6 +170,8 @@ export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent: boolea
 			const url = new URL(location.href);
 			if (next.scenario) url.searchParams.set("scenario", next.scenario);
 			else url.searchParams.delete("scenario");
+			if (next.watchId && !next.scenario) url.searchParams.set("watch", next.watchId);
+			else url.searchParams.delete("watch");
 			url.searchParams.delete("run");
 			history.replaceState(null, "", url);
 			requestAnimationFrame(() => results.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -178,7 +182,7 @@ export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent: boolea
 	}, []);
 
 	const pickScenario = useCallback(
-		(s: Scenario) => start({ comps: s.comps, you: s.you, from: s.from && weeks.includes(s.from) ? s.from : defaultFrom, scenario: s.id }),
+		(s: Scenario) => start({ comps: s.comps, you: s.you, from: s.from && weeks.includes(s.from) ? s.from : defaultFrom, scenario: s.id, watchId: s.id }),
 		[start, weeks, defaultFrom],
 	);
 
@@ -190,9 +194,17 @@ export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent: boolea
 	useEffect(() => {
 		if (!slate || autoRan.current) return;
 		autoRan.current = true;
-		const scenario = SCENARIOS.find((s) => s.id === new URLSearchParams(location.search).get("scenario"));
+		const params = new URLSearchParams(location.search);
+		const scenario = SCENARIOS.find((s) => s.id === params.get("scenario"));
+		const watchId = params.get("watch");
 		if (scenario) pickScenario(scenario);
-	}, [slate, pickScenario]);
+		else if (watchId) {
+			// A watch link opens the watched plan, with its log and Simulate.
+			fetchWatch(watchId)
+				.then((w) => w && start({ comps: w.comps, you: w.you, from: w.from, watchId: w.id, scenario: w.featured ? w.id : undefined }))
+				.catch(() => undefined);
+		}
+	}, [slate, pickScenario, start]);
 
 	return (
 		<div className="flex flex-wrap items-start gap-7">

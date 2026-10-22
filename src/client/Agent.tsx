@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import type { AgentEvent, AgentPlan, AgentStepResponse } from "../shared/types.ts";
-import { agentStep, fetchAgentRun } from "./api.ts";
+import { fmtDay } from "../engine/score/narrate.ts";
+import type { AgentEvent, AgentPlan, AgentStepResponse, BaselineResult, CheckedClaim, ClaimStatus } from "../shared/types.ts";
+import { agentStep, fetchAgentRun, fetchBaseline } from "./api.ts";
 
 const EXAMPLES = [
 	"Should Dune: Part Three keep its Dec 18 date?",
@@ -9,10 +10,132 @@ const EXAMPLES = [
 	"Find a clear winter week for a family film like Paddington 2.",
 ];
 
-type Run = { status: "idle" } | { status: "running" | "done" | "error"; question: string; runId?: string; events: AgentEvent[]; replay?: boolean; error?: string };
+type Run =
+	| { status: "idle" }
+	| { status: "running" | "done" | "error"; question: string; runId?: string; events: AgentEvent[]; replay?: boolean; error?: string; baseline?: BaselineResult };
 
 const card = "rounded-[18px] border border-line bg-stage";
 const field = "h-11 w-full rounded-[10px] border border-line bg-house px-3 text-sm text-ink placeholder:text-muted focus:border-marquee focus:outline-none";
+
+const STATUS: Record<ClaimStatus, { label: string; dot: string }> = {
+	"right-date": { label: "Right date", dot: "bg-clear" },
+	"right-week": { label: "Right week", dot: "bg-counter" },
+	"wrong-date": { label: "Wrong date", dot: "bg-hot" },
+	"no-date": { label: "No date given", dot: "bg-muted" },
+	"not-on-slate": { label: "Not on the current US slate", dot: "bg-muted" },
+	"outside-window": { label: "Outside the slate window, not checked", dot: "bg-line" },
+};
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** "It named 5 releases: 3 with the right date, 1 with a wrong date and 1 that isn't on the current US slate." */
+function claimSummary(b: BaselineResult): string {
+	if (!b.claims) return "Its list of releases couldn't be read, so nothing was checked.";
+	const checked = b.claims.filter((c) => c.status !== "outside-window");
+	if (checked.length === 0) return "It didn't name any release inside the slate window.";
+	if (b.counts["right-date"] === checked.length) {
+		const n = checked.length;
+		return `It named ${plural(n, "upcoming release")}, ${n === 1 ? "with the right date" : n === 2 ? "both with the right date" : `all with the right date`}.`;
+	}
+	const parts = [
+		b.counts["right-date"] ? `${b.counts["right-date"]} with the right date` : "",
+		b.counts["right-week"] ? `${b.counts["right-week"]} in the right week` : "",
+		b.counts["wrong-date"] ? `${b.counts["wrong-date"]} with a wrong date` : "",
+		b.counts["no-date"] ? `${b.counts["no-date"]} with no date` : "",
+		b.counts["not-on-slate"] ? `${b.counts["not-on-slate"]} that ${b.counts["not-on-slate"] === 1 ? "isn't" : "aren't"} on the current US slate` : "",
+	].filter(Boolean);
+	const list = parts.length <= 2 ? parts.join(" and ") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+	return `It named ${plural(checked.length, "upcoming release")}: ${list}.`;
+}
+
+function ClaimRow({ c }: { c: CheckedClaim }) {
+	const s = STATUS[c.status];
+	const said = c.said ? fmtDay(c.said, { month: "short", day: "numeric", year: "numeric" }) : (c.saidText ?? "no date");
+	return (
+		<li className="grid grid-cols-[auto_1fr] gap-x-2.5 py-2">
+			<span aria-hidden className={`mt-1.5 size-2 rounded-full ${s.dot}`} />
+			<span className="min-w-0">
+				<span className="block text-sm text-ink">{c.title}</span>
+				<span className="block text-xs text-muted">
+					{s.label} · said {said}
+					{c.slate && c.status !== "right-date"
+						? ` · slate: ${c.slate.title !== c.title ? `${c.slate.title}, ` : ""}${fmtDay(c.slate.date, { month: "short", day: "numeric", year: "numeric" })}`
+						: ""}
+				</span>
+			</span>
+		</li>
+	);
+}
+
+/** The same question, the same model, no tools: its answer beside the agent's, and its dates checked against the live slate. */
+function Baseline({ runId, initial }: { runId: string; initial?: BaselineResult }) {
+	const [state, setState] = useState<{ data?: BaselineResult; busy?: boolean; error?: string }>({ data: initial });
+	useEffect(() => setState({ data: initial }), [runId, initial]);
+	const ask = () => {
+		setState({ busy: true });
+		fetchBaseline(runId)
+			.then((data) => setState({ data }))
+			.catch((e: unknown) => setState({ error: e instanceof Error ? e.message : String(e) }));
+	};
+	const b = state.data;
+	if (!b) {
+		return (
+			<div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-dashed border-line pt-5">
+				<button
+					type="button"
+					onClick={ask}
+					disabled={state.busy}
+					className="min-h-11 rounded-[10px] border border-line px-4 text-sm font-medium text-ink hover:border-marquee disabled:opacity-50"
+				>
+					{state.busy ? "Asking the model alone…" : "Compare: the same model without tools"}
+				</button>
+				<span className="max-w-xl text-xs text-muted">
+					One call to Claude Haiku 5.5 with today's date and the same answer format, but no live slate and no Qloo. Every date it gives is checked against the slate.
+				</span>
+				{state.error && <p className="w-full text-sm text-hot">{state.error}</p>}
+			</div>
+		);
+	}
+	const missed = b.missed.map((m) => `${m.title} (${fmtDay(m.date)})`);
+	return (
+		<div className="flex flex-col gap-4 border-t border-dashed border-line pt-5">
+			<div className="flex flex-col gap-1.5">
+				<p className="font-mono text-[11px] tracking-[0.16em] text-counter uppercase">Same model, no tools</p>
+				<h3 className="font-display text-3xl leading-none tracking-wide">What the model says from memory</h3>
+				<p className="max-w-3xl text-sm text-pretty text-ink-2">
+					{claimSummary(b)}
+					{b.topChecked > 0 &&
+						(missed.length
+							? ` It never mentions ${missed.length} of this audience's ${b.topChecked} biggest rivals: ${missed.join(", ")}.`
+							: ` It mentions all ${b.topChecked} of this audience's biggest rivals.`)}
+					{b.pick &&
+						` Its pick, ${fmtDay(b.pick.said)}, rates pressure ${Math.round(b.pick.pressure * 100)} for this audience on the live calendar: #${b.pick.rank} of ${b.pick.of} weeks by clear score.`}
+				</p>
+			</div>
+			<div className="grid gap-x-8 gap-y-4 lg:grid-cols-[1.3fr_1fr]">
+				<div className="rounded-xl border border-line bg-house p-4">
+					<AnswerText text={b.answer} />
+				</div>
+				<div>
+					<p className="mb-1 font-mono text-[11px] tracking-[0.16em] text-muted uppercase">Its dates, checked against the live slate</p>
+					{b.claims && b.claims.length > 0 ? (
+						<ul className="divide-y divide-line">
+							{b.claims.map((c) => (
+								<ClaimRow key={`${c.title}-${c.said ?? c.saidText ?? ""}`} c={c} />
+							))}
+						</ul>
+					) : (
+						<p className="text-sm text-muted">{b.claims ? "It didn't list any releases." : "Its list of releases couldn't be read."}</p>
+					)}
+				</div>
+			</div>
+			<p className="text-xs text-muted">
+				{b.model ?? "Claude Haiku 5.5"} · ${b.costUsd.toFixed(4)} · asked once per run, so replays and share links cost nothing. "Not on the slate" can also mean a different title;
+				releases outside the slate window aren't checked.
+			</p>
+		</div>
+	);
+}
 
 /** Plain-text answer: "- " lines become a list, other lines paragraphs. */
 function AnswerText({ text }: { text: string }) {
@@ -102,6 +225,7 @@ export function AgentPanel({ enabled, onPlan }: { enabled: boolean; onPlan: (pla
 				runId: res.runId,
 				events: reset || r.status === "idle" ? res.events : [...r.events, ...res.events],
 				replay: res.replay,
+				baseline: res.baseline ?? (reset || r.status === "idle" ? undefined : r.baseline),
 			}));
 			const key = res.plan ? `${res.plan.comps.map((c) => c.id).join()}|${res.plan.you ?? ""}|${res.plan.from}` : "";
 			if (res.plan && key !== lastPlan.current) {
@@ -247,6 +371,7 @@ export function AgentPanel({ enabled, onPlan }: { enabled: boolean; onPlan: (pla
 					</div>
 				</div>
 			)}
+			{run.status === "done" && run.runId && answer && <Baseline runId={run.runId} initial={run.baseline} />}
 		</section>
 	);
 }

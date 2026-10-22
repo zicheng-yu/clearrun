@@ -6,7 +6,7 @@
  */
 import { percentiles, placeAmong, sizes } from "../engine/score/normalize.ts";
 import { ANCHOR_GAMES } from "../shared/games.ts";
-import type { PlanResponse, RivalScore, SlateTitle } from "../shared/types.ts";
+import type { PlanResponse, RivalScore, SlateSnapshot, SlateTitle } from "../shared/types.ts";
 import { insightsAffinities, QlooQuotaError, type QlooClient } from "./qloo.ts";
 import { cachedAffinities, latestSnapshot, storeAffinities, type AffinityDomain } from "./store.ts";
 
@@ -31,11 +31,18 @@ export function normalizeComps(comps: unknown): string[] {
 const rivalId = (t: SlateTitle) => `${t.id}@${t.date}`;
 const unique = (ids: string[]) => [...new Set(ids.map((id) => id.toUpperCase()))];
 
-/** `maxCalls` caps this step's Qloo calls (the agent shares one scoring step per request across its tools). */
-export async function planStep(ctx: { db: D1Database; qloo?: QlooClient }, input: { comps?: unknown; you?: unknown }, options: { maxCalls?: number } = {}): Promise<PlanResponse> {
+/**
+ * `maxCalls` caps this step's Qloo calls (the agent shares one scoring step per request across its tools).
+ * `snapshot` plans against a given slate instead of the latest one: Simulate passes a copy with one date changed.
+ */
+export async function planStep(
+	ctx: { db: D1Database; qloo?: QlooClient },
+	input: { comps?: unknown; you?: unknown },
+	options: { maxCalls?: number; snapshot?: SlateSnapshot } = {},
+): Promise<PlanResponse> {
 	const comps = normalizeComps(input.comps);
 	const signal = comps.join(",");
-	const snapshot = await latestSnapshot(ctx.db);
+	const snapshot = options.snapshot ?? (await latestSnapshot(ctx.db));
 	if (!snapshot) throw new SlateNotReadyError("The release slate is still being built");
 
 	const you = typeof input.you === "string" ? snapshot.titles.find((t) => t.id === input.you) : undefined;

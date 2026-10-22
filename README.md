@@ -4,7 +4,7 @@
 
 Built for the [Qloo Agentic Hackathon](https://qloo.devpost.com/) (2026). Live at **https://clearrun.zichengyu.com**.
 
-> Status: the planner and the release agent are live. Ask the agent a release question in plain English, pick a featured scenario (Dunesday, GTA VI week, a family slot, indie horror), or describe your audience with released comps. Clear Run scores every rival on the live calendar, explains the overlap with Qloo taste tags, and recommends weeks. Watch-and-re-plan and the LLM-only baseline are next.
+> Status: live. Ask the release agent a question in plain English, pick a featured scenario (Dunesday, GTA VI week, a family slot, indie horror), or describe your audience with released comps. Clear Run scores every rival on the live calendar, explains the overlap with Qloo taste tags, recommends weeks, and watches the plan: after every daily refresh it re-plans and logs what changed. Next to each agent answer, the same model with no tools answers the same question, and its dates are checked against the slate.
 
 ## How it works
 
@@ -33,6 +33,18 @@ Built for the [Qloo Agentic Hackathon](https://qloo.devpost.com/) (2026). Live a
 
    The model only sees what the tools return. Every date in its answer is checked against this run's tool results, and the page shows the result of that check. A typical run takes 3–4 model calls and costs about $0.001–0.0015, with the system prompt and tools read from the prompt cache.
 
+8. **Watch and re-plan** (`src/worker/watch.ts`, `src/engine/watch`):
+   - A watch stores a plan (comps, your title, the week you'd open) and its state at the last check.
+   - After each daily slate refresh, the cron re-plans every watch against the new slate. It logs date moves, new entrants and exits near your week (rivals that can touch your first four weeks), plus verdict flips, each with a short note from the agent.
+   - Scores are cached, so a re-plan costs no Qloo calls unless new titles were dated.
+   - **Simulate** runs the same re-plan against a copy of today's calendar with one rival's date changed. Nothing real changes, and simulations aren't logged.
+   - The four featured scenarios have watches, at `?watch=dunesday` and the other scenario IDs.
+9. **Baseline** (`src/worker/baseline.ts`, `src/engine/baseline`):
+   - The agent's question goes to the same model with today's date and the same answer format, but no tools and no live data.
+   - The model lists the releases it relied on, and each date is checked against the slate: right date, right week, wrong date, no date, or not on the slate.
+   - The audience's biggest rivals that it never mentions are counted.
+   - Its own recommended date is rated on the live calendar for the agent's audience.
+
 Decay, seasonality and size scaling are assumptions, and the page labels them as such. Pressure is a relative index, not a box-office forecast.
 
 TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
@@ -48,6 +60,10 @@ TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
 | `GET /api/audience?comps=` | Age and gender skew of your comps' fans (Qloo demographics) |
 | `POST /api/agent/step` | One step of an agent run: `{question}` starts one, `{runId, after}` continues it until `done` |
 | `GET /api/agent/run?id=` | A stored run, for share links (`?run=`); no model calls |
+| `POST /api/agent/baseline` | `{runId}`: the run's question answered by the same model with no tools, with its dates checked. One call per run, then stored |
+| `POST /api/watch` | `{comps, you?, from, week}`: start watching a plan |
+| `GET /api/watch?id=` | A watch: its current state and change log |
+| `POST /api/watch/simulate` | `{id, rival, to}`: what the daily check would do if one rival moved (`to: null` takes it off the calendar) |
 | `GET /api/changes` | Date moves and new entrants between snapshots |
 | `GET /api/health` | Modes, slate status and budgets |
 
@@ -63,13 +79,26 @@ TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
 - **Agent:**
   - The browser drives a run step by step. Each step makes at most one model call and one scoring step.
   - Runs live in D1. The same question against the same slate replays the stored run for free for 24 hours.
-- **Storage:** D1 holds snapshots, diffs, the Qloo caches, agent runs and the spend ledgers. Nothing is kept in KV, whose free plan allows only 1,000 writes a day.
+- **Watches:**
+  - While the slate refresh runs, each cron tick runs one refresh step. Once it's done, each tick re-plans the three least recently checked watches against the new slate.
+  - Simulations are cached per (watch, slate, change).
+- **Storage:** D1 holds snapshots, diffs, the Qloo caches, agent runs, watches and the spend ledgers. Nothing is kept in KV, whose free plan allows only 1,000 writes a day.
 - **Hard budgets:**
   - Qloo: 25,000 requests a month (half of a shared key) and 1,500 a day, with a reserve on the key's shared remaining count. A per-IP rate limit applies to `/api/plan` and `/api/search`.
   - LLM: OpenRouter with `anthropic/claude-haiku-5.5` at low reasoning effort and automatic prompt caching.
     - Caps: $0.40 a day and $5 in total, checked before every call.
     - At most 6 model calls per run.
     - 12 runs per address per day; replays are free.
+
+## Evaluation
+
+- **The model alone doesn't know the calendar.** `scripts/eval-baseline.ts` asks the agent's model, with no tools, for the US dates of the 20 most-watched titles on the live slate (3 trials, Oct 22, 2026).
+  - Results: 20% right, 8% wrong, and no date given for 72%.
+  - It knows the four tentpoles announced long ago: Avengers: Doomsday, Dune: Part Three, The Hunger Games: Sunrise on the Reaping and GTA VI.
+  - It gives stale dates for films that moved, such as Clayface and Narnia: The Magician's Nephew.
+  - Asked for "the 15 biggest releases, Nov – Mar", it named 5 of the slate's 15 most-watched films.
+  - Full table: [docs/eval-baseline.md](docs/eval-baseline.md).
+- **The agent states only dates from its tools.** Every answer is checked, and the page shows the result.
 
 ## Develop
 

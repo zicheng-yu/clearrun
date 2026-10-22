@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Comparison } from "../engine/explain/compare.ts";
 import type { AudienceProfile } from "../engine/explain/demographics.ts";
-import type { AgentStepResponse, Comp, PlanProgress, PlanRequest, PlanResponse, PlanResult } from "../shared/types.ts";
+import type { AgentStepResponse, BaselineResult, Comp, PlanProgress, PlanRequest, PlanResponse, PlanResult, WatchEvent, WatchView } from "../shared/types.ts";
 
 async function errorMessage(response: Response): Promise<string> {
 	const body = (await response.json().catch(() => ({}))) as { message?: string };
@@ -67,4 +67,30 @@ export async function fetchAgentRun(id: string, signal?: AbortSignal): Promise<A
 	const response = await fetch(`/api/agent/run?id=${encodeURIComponent(id)}`, { signal });
 	if (!response.ok) throw new Error(response.status === 404 ? "That agent run has expired." : await errorMessage(response));
 	return (await response.json()) as AgentStepResponse;
+}
+
+export async function fetchBaseline(runId: string, signal?: AbortSignal): Promise<BaselineResult> {
+	const response = await fetch("/api/agent/baseline", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ runId }), signal });
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return (await response.json()) as BaselineResult;
+}
+
+export async function fetchWatch(id: string, signal?: AbortSignal): Promise<WatchView | undefined> {
+	const response = await fetch(`/api/watch?id=${encodeURIComponent(id)}`, { signal });
+	if (response.status === 404) return undefined;
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return (await response.json()) as WatchView;
+}
+
+export async function startWatch(input: { comps: Comp[]; you?: string; from: string; week: string; label?: string }): Promise<WatchView> {
+	const response = await fetch("/api/watch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return (await response.json()) as WatchView;
+}
+
+/** `to` is the rival's new opening day, or null to take it off the calendar. */
+export async function simulateWatch(input: { id: string; rival: string; to: string | null }): Promise<WatchEvent> {
+	const response = await fetch("/api/watch/simulate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return (await response.json()) as WatchEvent;
 }

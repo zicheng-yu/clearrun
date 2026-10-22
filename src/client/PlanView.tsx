@@ -9,6 +9,7 @@ import type { PlanResult, RivalScore } from "../shared/types.ts";
 import { fetchAudience, fetchExplain } from "./api.ts";
 import type { Setup } from "./Planner.tsx";
 import { wikiUrl } from "./SlateList.tsx";
+import { WatchSection } from "./Watch.tsx";
 
 interface WhatIf {
 	/** Rival ID → the week it was moved to. */
@@ -954,6 +955,16 @@ export function PlanView({ result, setup, weeks }: { result: PlanResult; setup: 
 					)}
 				/>
 			)}
+
+			<WatchSection
+				setup={setup}
+				week={whatIf.yourWeek ?? focus}
+				weeks={weeks}
+				rivals={result.rivals}
+				whatIf={changes > 0}
+				hasYou={Boolean(result.you)}
+				youTitle={result.you?.title}
+			/>
 
 			<TopRivals rivals={rivals} from={from} onOpen={openFor} />
 

@@ -30,6 +30,9 @@ export default defineConfig(({ mode }) => {
 				AGENT_MODE: bindings.text<"scripted" | "llm">("llm"),
 				// Agent runs one client may start per UTC day (replays of an answered question are free).
 				AGENT_DAILY_RUNS: bindings.text("12"),
+				// Watches one client may start per UTC day, and fresh simulations that get an agent note.
+				WATCH_DAILY: bindings.text("10"),
+				SIM_DAILY: bindings.text("20"),
 				// OpenRouter model IDs: the agent's model and the fallbacks tried when its providers fail.
 				LLM_MODEL: bindings.text("anthropic/claude-haiku-5.5"),
 				LLM_FALLBACK_MODELS: bindings.text("deepseek/deepseek-v4-flash"),

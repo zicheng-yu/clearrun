@@ -8,11 +8,11 @@
 import { planBrief, rivalBrief, whatIfBrief, type BriefRival } from "../engine/agent/brief.ts";
 import { checkDates, matchTitles, normalizeTitle, parseDay } from "../engine/agent/text.ts";
 import { analyze } from "../engine/score/analyze.ts";
-import { listWeeks } from "../engine/score/calendar.ts";
+import { leadWeek, listWeeks } from "../engine/score/calendar.ts";
 import { fmtDay } from "../engine/score/narrate.ts";
-import { addDays, isoDay, releaseWeek } from "../shared/dates.ts";
+import { isoDay, releaseWeek } from "../shared/dates.ts";
 import { GAMES } from "../shared/games.ts";
-import type { AgentEvent, AgentPlan, AgentStepResponse, Comp, PlanResult, SlateSnapshot } from "../shared/types.ts";
+import type { AgentEvent, AgentPlan, AgentStepResponse, BaselineResult, Comp, PlanResult, SlateSnapshot } from "../shared/types.ts";
 import { audienceOf, compareWithRival } from "./explain.ts";
 import { BudgetExhaustedError, chat, type ChatMessage, type LlmConfig, type ToolCall } from "./openrouter.ts";
 import { normalizeComps, PlanInputError, planStep, SlateNotReadyError } from "./plan.ts";
@@ -20,7 +20,8 @@ import { QlooError, QlooQuotaError, searchFilms, type QlooClient } from "./qloo.
 import { agentRunsSince, findAgentReplay, latestSnapshot, loadAgentRun, saveAgentRun, type AgentRunRow } from "./store.ts";
 
 const MAX_MODEL_CALLS = 6;
-const MAX_TOKENS = 1200;
+// Room for low-effort reasoning plus the answer; calls are billed only for what they use.
+const MAX_TOKENS = 2000;
 const SCORING_CALLS_PER_STEP = 2;
 const REPLAY_WINDOW_MS = 24 * 3600 * 1000;
 
@@ -123,6 +124,8 @@ interface RunState {
 	/** Input tokens across the run, and how many of them were read from the prompt cache. */
 	tokens?: { input: number; cached: number; output: number };
 	model?: string;
+	/** The no-tools comparison, added by runBaseline once someone asks for it. */
+	baseline?: BaselineResult;
 }
 
 export interface AgentContext {
@@ -146,7 +149,7 @@ type ToolOutcome = { done: true; content: unknown; summary: string; error?: bool
 
 const questionKey = (q: string) => normalizeTitle(q).slice(0, 300);
 const windowOf = (s: SlateSnapshot) => ({ start: s.windowStart, end: s.windowEnd });
-const defaultFrom = (weeks: string[]) => weeks.find((w) => w >= addDays(isoDay(new Date()), 28)) ?? weeks[0] ?? isoDay(new Date());
+const defaultFrom = (weeks: string[]) => leadWeek(weeks, isoDay(new Date()));
 
 function parseArgs(call: ToolCall): Record<string, unknown> {
 	try {
@@ -457,6 +460,7 @@ function response(run: AgentRunRow<RunState>, after: number, replay = false): Ag
 		plan: run.state.plan,
 		question: run.state.question,
 		...(replay ? { replay: true } : {}),
+		...(run.state.baseline ? { baseline: run.state.baseline } : {}),
 	};
 }
 

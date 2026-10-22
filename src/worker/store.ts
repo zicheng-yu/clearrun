@@ -11,6 +11,8 @@ const SCHEMA = [
 	`CREATE TABLE IF NOT EXISTS qloo_daily (day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0)`,
 	`CREATE TABLE IF NOT EXISTS llm_spend (day TEXT PRIMARY KEY, cost_usd REAL NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0)`,
 	`CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, client TEXT NOT NULL, question_key TEXT NOT NULL, snapshot_id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS watches (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, checked_at INTEGER NOT NULL, client TEXT NOT NULL, snapshot_id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS sim_cache (key TEXT PRIMARY KEY, client TEXT NOT NULL, created_at INTEGER NOT NULL, body TEXT NOT NULL)`,
 ];
 
 let ready: Promise<void> | undefined;
@@ -219,4 +221,86 @@ export async function agentRunsSince(db: D1Database, client: string, since: numb
 		db.prepare("DELETE FROM agent_runs WHERE created_at < ?1").bind(Date.now() - 14 * 24 * 3600 * 1000),
 	]);
 	return (count?.results[0] as { n?: number } | undefined)?.n ?? 0;
+}
+
+export interface WatchRow<B> {
+	id: string;
+	createdAt: number;
+	checkedAt: number;
+	client: string;
+	snapshotId: string;
+	status: "active" | "ended";
+	body: B;
+}
+
+type RawWatch = { id: string; created_at: number; checked_at: number; client: string; snapshot_id: string; status: string; body: string };
+const watchOf = <B>(r: RawWatch): WatchRow<B> => ({
+	id: r.id,
+	createdAt: r.created_at,
+	checkedAt: r.checked_at,
+	client: r.client,
+	snapshotId: r.snapshot_id,
+	status: r.status === "ended" ? "ended" : "active",
+	body: JSON.parse(r.body) as B,
+});
+
+export async function loadWatch<B>(db: D1Database, id: string): Promise<WatchRow<B> | undefined> {
+	await ensureSchema(db);
+	const row = await db.prepare("SELECT id, created_at, checked_at, client, snapshot_id, status, body FROM watches WHERE id = ?1").bind(id).first<RawWatch>();
+	return row ? watchOf<B>(row) : undefined;
+}
+
+export async function saveWatch<B>(db: D1Database, w: WatchRow<B>): Promise<void> {
+	await ensureSchema(db);
+	await db
+		.prepare(
+			`INSERT INTO watches (id, created_at, checked_at, client, snapshot_id, status, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+			 ON CONFLICT(id) DO UPDATE SET checked_at = excluded.checked_at, snapshot_id = excluded.snapshot_id, status = excluded.status, body = excluded.body`,
+		)
+		.bind(w.id, w.createdAt, w.checkedAt, w.client, w.snapshotId, w.status, JSON.stringify(w.body))
+		.run();
+}
+
+/** Active watches not yet checked against `snapshotId`, least recently checked first. */
+export async function staleWatches<B>(db: D1Database, snapshotId: string, limit: number): Promise<WatchRow<B>[]> {
+	await ensureSchema(db);
+	const rows = await db
+		.prepare("SELECT id, created_at, checked_at, client, snapshot_id, status, body FROM watches WHERE status = 'active' AND snapshot_id != ?1 ORDER BY checked_at LIMIT ?2")
+		.bind(snapshotId, limit)
+		.all<RawWatch>();
+	return rows.results.map((r) => watchOf<B>(r));
+}
+
+export async function watchesSince(db: D1Database, client: string, since: number): Promise<number> {
+	await ensureSchema(db);
+	const row = await db.prepare("SELECT COUNT(*) AS n FROM watches WHERE client = ?1 AND created_at > ?2").bind(client, since).first<{ n: number }>();
+	return row?.n ?? 0;
+}
+
+/** A cached simulation result, and how many fresh ones a client has run since `since`. */
+export async function cachedSimulation<T>(db: D1Database, key: string): Promise<T | undefined> {
+	await ensureSchema(db);
+	const row = await db.prepare("SELECT body FROM sim_cache WHERE key = ?1").bind(key).first<{ body: string }>();
+	return row ? (JSON.parse(row.body) as T) : undefined;
+}
+
+export async function storeSimulation(db: D1Database, key: string, client: string, body: unknown): Promise<void> {
+	await ensureSchema(db);
+	await db.batch([
+		db.prepare("INSERT OR REPLACE INTO sim_cache (key, client, created_at, body) VALUES (?1, ?2, ?3, ?4)").bind(key, client, Date.now(), JSON.stringify(body)),
+		db.prepare("DELETE FROM sim_cache WHERE created_at < ?1").bind(Date.now() - 7 * 24 * 3600 * 1000),
+	]);
+}
+
+export async function simulationsSince(db: D1Database, client: string, since: number): Promise<number> {
+	await ensureSchema(db);
+	const row = await db.prepare("SELECT COUNT(*) AS n FROM sim_cache WHERE client = ?1 AND created_at > ?2").bind(client, since).first<{ n: number }>();
+	return row?.n ?? 0;
+}
+
+/** The latest snapshot's ID without reading its body. */
+export async function latestSnapshotId(db: D1Database): Promise<string | undefined> {
+	await ensureSchema(db);
+	const row = await db.prepare("SELECT id FROM snapshots ORDER BY created_at DESC LIMIT 1").first<{ id: string }>();
+	return row?.id;
 }

@@ -68,6 +68,11 @@ export interface StepContext {
 	days: number;
 }
 
+/** True when the refresh is finished and not yet due to restart, so a cron tick is free for other work. */
+export function slateIdle(job: JobRow<SlateJobState> | undefined, now = Date.now()): boolean {
+	return Boolean(job && job.phase === "done" && now - job.updatedAt <= RESTART_AFTER_MS);
+}
+
 /** Runs one step. Returns the updated job (already saved). */
 export async function runSlateStep(ctx: StepContext, options: { restart?: boolean } = {}): Promise<JobRow<SlateJobState>> {
 	let job = await loadJob<SlateJobState>(ctx.db, JOB_NAME);

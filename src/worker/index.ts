@@ -1,12 +1,14 @@
 import { Hono, type Context } from "hono";
 import { AgentInputError, AgentLimitError, agentRun, agentStep } from "./agent.ts";
+import { BaselineEmptyError, BaselineInputError, runBaseline } from "./baseline.ts";
 import { audienceOf, compareWithRival } from "./explain.ts";
-import { DEFAULT_MODEL, LlmError, type LlmConfig } from "./openrouter.ts";
+import { BudgetExhaustedError, DEFAULT_MODEL, LlmError, type LlmConfig } from "./openrouter.ts";
 import { normalizeComps, PlanInputError, planStep, SlateNotReadyError } from "./plan.ts";
 import { QlooClient, QlooError, QlooQuotaError, searchFilms } from "./qloo.ts";
 import type { Health } from "../shared/types.ts";
-import { runSlateStep, JOB_NAME, type SlateJobState } from "./slate-job.ts";
+import { runSlateStep, slateIdle, JOB_NAME, type SlateJobState } from "./slate-job.ts";
 import { latestSnapshot, llmSpend, loadJob, qlooUsage, recentChanges } from "./store.ts";
+import { createWatch, getWatch, runWatchStep, seedFeatured, simulateWatch, WatchInputError, WatchLimitError, WatchNotReadyError } from "./watch.ts";
 
 type AppContext = Context<{ Bindings: Env }>;
 const app = new Hono<{ Bindings: Env }>().basePath("/api");
@@ -40,7 +42,8 @@ function llmFor(env: Env): LlmConfig | undefined {
 			.split(",")
 			.map((m) => m.trim())
 			.filter(Boolean),
-		maxTokens: 1200,
+		// A ceiling; each call asks for less (and is billed only for what it uses).
+		maxTokens: 3000,
 		dailyUsd: numberOr(env.LLM_DAILY_USD, 0.4),
 		totalUsd: numberOr(env.LLM_TOTAL_USD, 5),
 		appUrl: "https://clearrun.zichengyu.com",
@@ -190,10 +193,72 @@ app.post("/agent/step", async (c) => {
 	}
 });
 
+/** The agent's question answered by the same model with no tools, its dates checked against the live slate. One call per run. */
+app.post("/agent/baseline", async (c) => {
+	const llm = llmFor(c.env);
+	if (!llm) return c.json({ error: "agent_off", message: "The AI agent is off right now." }, 503);
+	if (await rateLimited(c)) return c.json({ error: "rate_limited", message: "Too many requests from this address. Try again in a minute." }, 429);
+	const body = await c.req.json<{ runId?: unknown }>().catch(() => undefined);
+	if (!body) return c.json({ error: "bad_request", message: "Expected a JSON body" }, 400);
+	try {
+		return c.json(await runBaseline({ db: c.env.DB, qloo: qlooFor(c.env), llm }, body.runId), 200, { "Cache-Control": "no-store" });
+	} catch (error) {
+		if (error instanceof BaselineInputError) return c.json({ error: "bad_request", message: error.message }, 400);
+		if (error instanceof BaselineEmptyError) return c.json({ error: "model_unavailable", message: error.message }, 502);
+		if (error instanceof SlateNotReadyError) return c.json({ error: "slate_not_ready", message: error.message }, 503);
+		if (error instanceof BudgetExhaustedError) return c.json({ error: "budget", message: error.message }, 503);
+		if (error instanceof LlmError) {
+			log("llm error", { status: error.status, path: "/agent/baseline" });
+			return c.json({ error: "model_unavailable", message: "The model didn't answer. Try again in a moment." }, 502);
+		}
+		throw error;
+	}
+});
+
 /** A stored run, for share links (?run=). No model calls. */
 app.get("/agent/run", async (c) => {
 	const run = await agentRun(c.env.DB, c.req.query("id") ?? "");
 	return run ? c.json(run, 200, { "Cache-Control": "public, max-age=60" }) : c.json({ error: "not_found" }, 404);
+});
+
+function watchError(c: AppContext, error: unknown) {
+	if (error instanceof WatchInputError || error instanceof PlanInputError) return c.json({ error: "bad_request", message: error.message }, 400);
+	if (error instanceof WatchLimitError) return c.json({ error: "limit", message: error.message }, 429);
+	if (error instanceof WatchNotReadyError) return c.json({ error: "not_ready", message: error.message }, 409);
+	if (error instanceof SlateNotReadyError) return c.json({ error: "slate_not_ready", message: error.message }, 503);
+	if (error instanceof QlooError) return c.json({ error: "qloo_unavailable", message: "Qloo didn't answer. Try again in a moment." }, 502);
+	throw error;
+}
+
+/** Start watching a plan: {comps, you?, from, week}. The daily check re-plans it after every slate refresh. */
+app.post("/watch", async (c) => {
+	if (await rateLimited(c)) return c.json({ error: "rate_limited", message: "Too many requests from this address. Try again in a minute." }, 429);
+	const body = await c.req.json<{ comps?: unknown; you?: unknown; from?: unknown; week?: unknown; label?: unknown }>().catch(() => undefined);
+	if (!body) return c.json({ error: "bad_request", message: "Expected a JSON body" }, 400);
+	try {
+		const ctx = { db: c.env.DB, qloo: qlooFor(c.env), client: await clientKey(c), dailyWatches: numberOr(c.env.WATCH_DAILY, 10) };
+		return c.json(await createWatch(ctx, body), 201);
+	} catch (error) {
+		return watchError(c, error);
+	}
+});
+
+app.get("/watch", async (c) => {
+	const watch = await getWatch(c.env.DB, c.req.query("id") ?? "");
+	return watch ? c.json(watch, 200, { "Cache-Control": "no-store" }) : c.json({ error: "not_found" }, 404);
+});
+
+/** What the daily check would do if one rival's date changed: {id, rival, to (YYYY-MM-DD, or null for off the calendar)}. */
+app.post("/watch/simulate", async (c) => {
+	if (await rateLimited(c)) return c.json({ error: "rate_limited", message: "Too many requests from this address. Try again in a minute." }, 429);
+	const body = await c.req.json<{ id?: unknown; rival?: unknown; to?: unknown }>().catch(() => undefined);
+	if (!body) return c.json({ error: "bad_request", message: "Expected a JSON body" }, 400);
+	try {
+		const ctx = { db: c.env.DB, qloo: qlooFor(c.env), llm: llmFor(c.env), client: await clientKey(c), dailyNotes: numberOr(c.env.SIM_DAILY, 20) };
+		return c.json(await simulateWatch(ctx, body), 200, { "Cache-Control": "no-store" });
+	} catch (error) {
+		return watchError(c, error);
+	}
 });
 
 /** Released films by name, for picking comps. Cached for 7 days per query. */
@@ -212,12 +277,33 @@ app.get("/search", async (c) => {
 	}
 });
 
+/** Admin routes need the x-admin-token header. */
+const admin = (c: AppContext) => {
+	const token = c.env.ADMIN_TOKEN?.trim();
+	return Boolean(token && c.req.header("x-admin-token") === token);
+};
+
 /** Advances the slate refresh by one step. For the first build and for debugging; cron does this every 10 minutes. */
 app.post("/admin/slate/step", async (c) => {
-	const token = c.env.ADMIN_TOKEN?.trim();
-	if (!token || c.req.header("x-admin-token") !== token) return c.json({ error: "forbidden" }, 403);
+	if (!admin(c)) return c.json({ error: "forbidden" }, 403);
 	const job = await runSlateStep({ db: c.env.DB, qloo: qlooFor(c.env), days: numberOr(c.env.SLATE_DAYS, 180) }, { restart: c.req.query("restart") === "1" });
 	return c.json({ phase: job.phase, cursor: job.cursor, error: job.error, titles: job.state.titles.length, sections: job.state.sections.length });
+});
+
+/** Runs one round of watch re-plans now (cron does this whenever the slate refresh is idle). */
+app.post("/admin/watch/step", async (c) => {
+	if (!admin(c)) return c.json({ error: "forbidden" }, 403);
+	return c.json(await runWatchStep({ db: c.env.DB, qloo: qlooFor(c.env), llm: llmFor(c.env) }, numberOr(c.req.query("limit"), 3)));
+});
+
+/** Creates the featured scenarios' watches (IDs = scenario IDs); ?force=1 recreates them. */
+app.post("/admin/watch/seed", async (c) => {
+	if (!admin(c)) return c.json({ error: "forbidden" }, 403);
+	try {
+		return c.json(await seedFeatured({ db: c.env.DB, qloo: qlooFor(c.env) }, { force: c.req.query("force") === "1" }));
+	} catch (error) {
+		return watchError(c, error);
+	}
 });
 
 app.notFound((c) => c.json({ error: "not_found" }, 404));
@@ -227,13 +313,21 @@ app.onError((err, c) => {
 	return c.json({ error: "internal_error" }, 500);
 });
 
+/** One cron tick: a step of the slate refresh while it runs, else a round of watch re-plans against the new slate. */
+async function tick(env: Env): Promise<Record<string, unknown>> {
+	const qloo = qlooFor(env);
+	if (slateIdle(await loadJob<SlateJobState>(env.DB, JOB_NAME))) return { watches: await runWatchStep({ db: env.DB, qloo, llm: llmFor(env) }) };
+	const job = await runSlateStep({ db: env.DB, qloo, days: numberOr(env.SLATE_DAYS, 180) });
+	return { slate: { phase: job.phase, cursor: job.cursor, error: job.error } };
+}
+
 export default {
 	fetch: app.fetch,
 	async scheduled(_controller, env, ctx) {
 		ctx.waitUntil(
-			runSlateStep({ db: env.DB, qloo: qlooFor(env), days: numberOr(env.SLATE_DAYS, 180) }).then(
-				(job) => log("slate step", { phase: job.phase, cursor: job.cursor, error: job.error }),
-				(error: unknown) => log("slate step failed", { error: error instanceof Error ? error.message : String(error) }),
+			tick(env).then(
+				(result) => log("cron", result),
+				(error: unknown) => log("cron failed", { error: error instanceof Error ? error.message : String(error) }),
 			),
 		);
 	},

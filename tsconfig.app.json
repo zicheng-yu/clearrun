@@ -25,6 +25,8 @@
 		"src/shared",
 		"src/engine/score",
 		"src/engine/explain",
-		"src/engine/agent"
+		"src/engine/agent",
+		"src/engine/watch",
+		"src/engine/baseline"
 	]
 }

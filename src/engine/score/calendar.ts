@@ -37,6 +37,11 @@ export const YOUR_RUN: readonly number[] = DECAY.film.slice(1, 5);
 const DAY_MS = 86_400_000;
 export const weeksBetween = (from: string, to: string) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / (7 * DAY_MS));
 
+/** The first listed week at least four weeks after `today`: the earliest a release can realistically be planned. */
+export function leadWeek(weeks: string[], today: string): string {
+	return weeks.find((w) => w >= addDays(today, 28)) ?? weeks[0] ?? today;
+}
+
 /** Every release-week Friday from the week holding `start` through the week holding `end`. */
 export function listWeeks(start: string, end: string): string[] {
 	const out: string[] = [];
