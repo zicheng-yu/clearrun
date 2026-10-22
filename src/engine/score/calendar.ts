@@ -35,7 +35,9 @@ export function decay(kind: RivalKind, k: number): number {
 export const YOUR_RUN: readonly number[] = DECAY.film.slice(1, 5);
 
 const DAY_MS = 86_400_000;
-export const weeksBetween = (from: string, to: string) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / (7 * DAY_MS));
+const WEEK_MS = 7 * DAY_MS;
+const dayMs = (day: string) => Date.parse(`${day}T00:00:00Z`);
+export const weeksBetween = (from: string, to: string) => Math.round((dayMs(to) - dayMs(from)) / WEEK_MS);
 
 /** The first listed week at least four weeks after `today`: the earliest a release can realistically be planned. */
 export function leadWeek(weeks: string[], today: string): string {
@@ -67,9 +69,14 @@ export function nthWeekday(year: number, month: number, weekday: number, n: numb
 	return iso(year, month, last.getUTCDate() - ((last.getUTCDay() - weekday + 7) % 7));
 }
 
-/** US holiday release weeks for one year, keyed by their Friday. */
+const holidays = new Map<number, Map<string, Season>>();
+
+/** US holiday release weeks for one year, keyed by their Friday (computed once per year). */
 function holidayWeeks(year: number): Map<string, Season> {
+	const known = holidays.get(year);
+	if (known) return known;
 	const weeks = new Map<string, Season>();
+	holidays.set(year, weeks);
 	const add = (day: string, factor: number, label: string) => weeks.set(releaseWeek(day), { factor, label });
 	add(nthWeekday(year, 0, 1, 3), 1.15, "MLK weekend");
 	add(nthWeekday(year, 1, 1, 3), 1.15, "Presidents' Day weekend");
@@ -126,26 +133,30 @@ export interface WeekScore {
  */
 export function planCalendar(rivals: CalendarRival[], weeks: string[], options: { from?: string } = {}): WeekScore[] {
 	const runTotal = YOUR_RUN.reduce((a, b) => a + b, 0);
+	// Dates are parsed once up front: this loop runs weeks × run weeks × rivals times (about 10,000 for a slate).
+	const starts = rivals.map((r) => dayMs(r.week));
 	const rows = weeks.map((week) => {
 		let pressure = 0;
 		let buzz = 0;
 		let scored = 0;
 		const byRival = new Map<string, Contributor>();
+		const weekStart = dayMs(week);
 		YOUR_RUN.forEach((weight, j) => {
-			const at = addDays(week, 7 * j);
-			for (const rival of rivals) {
-				const d = decay(rival.kind, weeksBetween(rival.week, at));
-				if (d === 0) continue;
+			const at = weekStart + j * WEEK_MS;
+			rivals.forEach((rival, i) => {
+				const start = starts[i] as number;
+				const d = decay(rival.kind, Math.round((at - start) / WEEK_MS));
+				if (d === 0) return;
 				const b = (weight * rival.size * d) / runTotal;
 				const p = rival.overlap === undefined ? 0 : rival.overlap ** 2 * b;
 				buzz += b;
 				pressure += p;
 				if (rival.overlap !== undefined) scored += b;
-				const c = byRival.get(rival.id) ?? { id: rival.id, k: weeksBetween(rival.week, week), pressure: 0, buzz: 0 };
+				const c = byRival.get(rival.id) ?? { id: rival.id, k: Math.round((weekStart - start) / WEEK_MS), pressure: 0, buzz: 0 };
 				c.pressure += p;
 				c.buzz += b;
 				byRival.set(rival.id, c);
-			}
+			});
 		});
 		const contributors = [...byRival.values()].sort((x, y) => y.pressure - x.pressure || y.buzz - x.buzz);
 		return { week, pressure, buzz, season: season(week), confidence: buzz > 0 ? scored / buzz : 1, contributors };
