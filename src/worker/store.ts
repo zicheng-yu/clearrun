@@ -1,4 +1,4 @@
-/** D1 storage: slate snapshots and changes, jobs, the Qloo caches, spend ledgers, agent runs, watches and backtests. */
+/** D1 storage: slate snapshots and changes, jobs, the Qloo caches, spend ledgers, agent runs, watches, backtests, share cards and shared plans. */
 import type { SlateChange, SlateSnapshot } from "../shared/types.ts";
 
 const SCHEMA = [
@@ -14,6 +14,9 @@ const SCHEMA = [
 	`CREATE TABLE IF NOT EXISTS watches (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, checked_at INTEGER NOT NULL, client TEXT NOT NULL, snapshot_id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS sim_cache (key TEXT PRIMARY KEY, client TEXT NOT NULL, created_at INTEGER NOT NULL, body TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS backtests (id TEXT NOT NULL, version INTEGER NOT NULL, created_at INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (id, version))`,
+	`CREATE TABLE IF NOT EXISTS cards (hash TEXT PRIMARY KEY, created_at INTEGER NOT NULL, body TEXT NOT NULL, png TEXT)`,
+	`CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, client TEXT NOT NULL, body TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS share_meta (key TEXT PRIMARY KEY, created_at INTEGER NOT NULL, body TEXT NOT NULL)`,
 ];
 
 let ready: Promise<void> | undefined;
@@ -317,4 +320,63 @@ export async function saveBacktests(db: D1Database, version: number, cases: { id
 	await ensureSchema(db);
 	const insert = db.prepare("INSERT OR REPLACE INTO backtests (id, version, created_at, body) VALUES (?1, ?2, ?3, ?4)");
 	await db.batch([...cases.map((c) => insert.bind(c.id, version, Date.now(), JSON.stringify(c))), db.prepare("DELETE FROM backtests WHERE version != ?1").bind(version)]);
+}
+
+const CARD_TTL_MS = 60 * 24 * 3600 * 1000;
+
+/** Keeps a share card's data under its hash (a card never changes, so a repeat is a no-op); a new card prunes those over 60 days old. */
+export async function saveCard(db: D1Database, hash: string, body: string): Promise<void> {
+	await ensureSchema(db);
+	const inserted = await db.prepare("INSERT OR IGNORE INTO cards (hash, created_at, body) VALUES (?1, ?2, ?3)").bind(hash, Date.now(), body).run();
+	if (inserted.meta.changes > 0)
+		await db
+			.prepare("DELETE FROM cards WHERE created_at < ?1")
+			.bind(Date.now() - CARD_TTL_MS)
+			.run();
+}
+
+/** A card's data, and its PNG (base64) once it has been drawn. */
+export async function loadCard(db: D1Database, hash: string): Promise<{ body: string; png?: string } | undefined> {
+	await ensureSchema(db);
+	const row = await db.prepare("SELECT body, png FROM cards WHERE hash = ?1").bind(hash).first<{ body: string; png: string | null }>();
+	return row ? { body: row.body, ...(row.png ? { png: row.png } : {}) } : undefined;
+}
+
+export async function saveCardImage(db: D1Database, hash: string, png: string): Promise<void> {
+	await ensureSchema(db);
+	await db.prepare("UPDATE cards SET png = ?2 WHERE hash = ?1").bind(hash, png).run();
+}
+
+/** Stores a shared plan under its ID (derived from the plan, so sharing the same plan twice gives the same link). */
+export async function saveShare(db: D1Database, id: string, client: string, body: unknown): Promise<void> {
+	await ensureSchema(db);
+	await db.prepare("INSERT OR IGNORE INTO shares (id, created_at, client, body) VALUES (?1, ?2, ?3, ?4)").bind(id, Date.now(), client, JSON.stringify(body)).run();
+}
+
+export async function loadShare<T>(db: D1Database, id: string): Promise<T | undefined> {
+	await ensureSchema(db);
+	const row = await db.prepare("SELECT body FROM shares WHERE id = ?1").bind(id).first<{ body: string }>();
+	return row ? (JSON.parse(row.body) as T) : undefined;
+}
+
+export async function sharesSince(db: D1Database, client: string, since: number): Promise<number> {
+	await ensureSchema(db);
+	const row = await db.prepare("SELECT COUNT(*) AS n FROM shares WHERE client = ?1 AND created_at > ?2").bind(client, since).first<{ n: number }>();
+	return row?.n ?? 0;
+}
+
+/** A share link's preview as last computed for one slate snapshot. */
+export async function cachedShareMeta<T>(db: D1Database, key: string): Promise<T | undefined> {
+	await ensureSchema(db);
+	const row = await db.prepare("SELECT body FROM share_meta WHERE key = ?1").bind(key).first<{ body: string }>();
+	return row ? (JSON.parse(row.body) as T) : undefined;
+}
+
+/** Stores a preview; previews for snapshots over a week old are dropped as new ones come in. */
+export async function storeShareMeta(db: D1Database, key: string, body: unknown): Promise<void> {
+	await ensureSchema(db);
+	await db.batch([
+		db.prepare("INSERT OR REPLACE INTO share_meta (key, created_at, body) VALUES (?1, ?2, ?3)").bind(key, Date.now(), JSON.stringify(body)),
+		db.prepare("DELETE FROM share_meta WHERE created_at < ?1").bind(Date.now() - 7 * 24 * 3600 * 1000),
+	]);
 }

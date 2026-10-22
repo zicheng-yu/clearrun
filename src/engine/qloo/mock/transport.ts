@@ -47,6 +47,16 @@ function entity(k: Known) {
 }
 
 function entities(params: URLSearchParams) {
+	const byId = list(params.get("entity_ids"));
+	if (byId.length > 0) {
+		// Lookups by ID: the featured comps, the films mock search offers, and every tagged film on the demo calendars.
+		const films = byId.flatMap((id) => {
+			const named = nameOf.get(id.toUpperCase());
+			const film = DEMO_FILMS.find((f) => (f.id ?? mockId(f.qid)) === id.toUpperCase());
+			return named ? [{ entity_id: id.toUpperCase(), name: named, types: ["urn:entity:movie"], properties: { release_year: film?.year } }] : [];
+		});
+		return { results: films };
+	}
 	const found = [...list(params.get("external.wikidata.ids")).map((q) => known.get(q.toUpperCase())), ...list(params.get("external.imdb.ids")).map((id) => byImdb.get(id))];
 	return { results: found.flatMap((k) => (k && DEMO_TAGS[k.qid] ? [entity(k)] : [])) };
 }

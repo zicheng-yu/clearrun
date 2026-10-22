@@ -187,6 +187,37 @@ export async function insightsAffinities(
 	return client.get("/v2/insights", params, { ttlSec: 0, reduce: (body) => scanAffinities(body, input.ids) });
 }
 
+/**
+ * Released films by Qloo ID, named as Qloo names them. Share cards take comp names from here, never from the client.
+ * Anything that isn't a film is left out.
+ */
+export async function filmsById(client: QlooClient, ids: string[]): Promise<Comp[]> {
+	return client.get(
+		"/entities",
+		{ entity_ids: ids.join(",") },
+		{
+			// Full entities run about 36 KB each; keep the name and year.
+			reduce: (body) => {
+				const data = JSON.parse(body) as { results?: { entity_id: string; name: string; types?: string[]; properties?: { release_year?: number; release_date?: string } }[] };
+				return (data.results ?? [])
+					.filter((e) => (e.types ?? []).includes("urn:entity:movie"))
+					.map((e) => {
+						const year = e.properties?.release_year ?? Number(e.properties?.release_date?.slice(0, 4));
+						return { id: e.entity_id.toUpperCase(), name: e.name, ...(Number.isFinite(year) && year > 0 ? { year } : {}) };
+					});
+			},
+		},
+	);
+}
+
+/** The comps with Qloo's names, in the order given. Undefined when Qloo is off here, or when an ID isn't a released film. */
+export async function namedComps(client: QlooClient | undefined, ids: string[]): Promise<Comp[] | undefined> {
+	if (!client) return undefined;
+	const films = new Map((await filmsById(client, ids)).map((c) => [c.id, c]));
+	const named = ids.map((id) => films.get(id.toUpperCase()));
+	return named.every((c): c is Comp => c !== undefined) ? named : undefined;
+}
+
 /** Released films matching a name, for picking comps. */
 export async function searchFilms(client: QlooClient, query: string): Promise<Comp[]> {
 	return client.get(

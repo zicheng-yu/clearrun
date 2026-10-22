@@ -5,7 +5,7 @@ import { addDays, isoDay } from "../shared/dates.ts";
 import { SCENARIOS, type Scenario } from "../shared/scenarios.ts";
 import type { AgentPlan, Comp, PlanProgress, PlanResult, SlateSnapshot } from "../shared/types.ts";
 import { AgentPanel } from "./Agent.tsx";
-import { fetchWatch, runPlan, searchFilms } from "./api.ts";
+import { fetchSharedPlan, fetchWatch, runPlan, searchFilms } from "./api.ts";
 import { PlanView } from "./PlanView.tsx";
 
 export interface Setup {
@@ -19,6 +19,10 @@ export interface Setup {
 	agent?: boolean;
 	/** The watch to show with this plan: a featured scenario's, or one opened from a ?watch= link. */
 	watchId?: string;
+	/** The agent run that chose this plan, shared as ?run=. */
+	runId?: string;
+	/** A custom plan opened from a ?plan= link. */
+	shareId?: string;
 }
 
 type Run = { status: "idle" } | { status: "running"; progress?: PlanProgress } | { status: "ready"; result: PlanResult } | { status: "error"; message: string };
@@ -172,6 +176,8 @@ export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent?: "llm"
 			else url.searchParams.delete("scenario");
 			if (next.watchId && !next.scenario) url.searchParams.set("watch", next.watchId);
 			else url.searchParams.delete("watch");
+			if (next.shareId && !next.scenario && !next.watchId) url.searchParams.set("plan", next.shareId);
+			else url.searchParams.delete("plan");
 			url.searchParams.delete("run");
 			history.replaceState(null, "", url);
 			requestAnimationFrame(() => results.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -187,7 +193,10 @@ export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent?: "llm"
 	);
 
 	// The agent's earliest week came from the same slate; trust it (a share link can load before the slate does).
-	const fromAgent = useCallback((plan: AgentPlan) => start({ comps: plan.comps, you: plan.you, from: plan.from || defaultFrom, agent: true }), [start, defaultFrom]);
+	const fromAgent = useCallback(
+		(plan: AgentPlan, runId: string) => start({ comps: plan.comps, you: plan.you, from: plan.from || defaultFrom, agent: true, runId }),
+		[start, defaultFrom],
+	);
 
 	// Share links: ?scenario=dunesday runs that scenario on load.
 	const autoRan = useRef(false);
@@ -197,11 +206,17 @@ export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent?: "llm"
 		const params = new URLSearchParams(location.search);
 		const scenario = SCENARIOS.find((s) => s.id === params.get("scenario"));
 		const watchId = params.get("watch");
+		const planId = params.get("plan");
 		if (scenario) pickScenario(scenario);
 		else if (watchId) {
 			// A watch link opens the watched plan, with its log and Simulate.
 			fetchWatch(watchId)
 				.then((w) => w && start({ comps: w.comps, you: w.you, from: w.from, watchId: w.id, scenario: w.featured ? w.id : undefined }))
+				.catch(() => undefined);
+		} else if (planId) {
+			// A shared plan link opens the plan it saved.
+			fetchSharedPlan(planId)
+				.then((p) => p && start({ comps: p.comps, you: p.you, from: p.from, shareId: p.id }))
 				.catch(() => undefined);
 		}
 	}, [slate, pickScenario, start]);

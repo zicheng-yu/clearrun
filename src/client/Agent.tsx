@@ -214,7 +214,7 @@ function Trace({ events, running }: { events: AgentEvent[]; running: boolean }) 
 /** The scripted planner answers when there's no language model (the offline demo, or the model budget spent). */
 const SCRIPTED = "scripted planner";
 
-export function AgentPanel({ mode, onPlan }: { mode?: "llm" | "scripted"; onPlan: (plan: AgentPlan) => void }) {
+export function AgentPanel({ mode, onPlan }: { mode?: "llm" | "scripted"; onPlan: (plan: AgentPlan, runId: string) => void }) {
 	const [question, setQuestion] = useState("");
 	const [run, setRun] = useState<Run>({ status: "idle" });
 	const abort = useRef<AbortController | undefined>(undefined);
@@ -233,7 +233,7 @@ export function AgentPanel({ mode, onPlan }: { mode?: "llm" | "scripted"; onPlan
 			const key = res.plan ? `${res.plan.comps.map((c) => c.id).join()}|${res.plan.you ?? ""}|${res.plan.from}` : "";
 			if (res.plan && key !== lastPlan.current) {
 				lastPlan.current = key;
-				onPlan(res.plan);
+				onPlan(res.plan, res.runId);
 			}
 		},
 		[onPlan],
@@ -251,7 +251,7 @@ export function AgentPanel({ mode, onPlan }: { mode?: "llm" | "scripted"; onPlan
 				if (!controller.signal.aborted) {
 					const url = new URL(location.href);
 					url.searchParams.set("run", res.runId);
-					url.searchParams.delete("scenario");
+					for (const other of ["scenario", "watch", "plan"]) url.searchParams.delete(other);
 					history.replaceState(null, "", url);
 				}
 			} catch (e) {

@@ -15,7 +15,7 @@ import { SCENARIOS } from "../shared/scenarios.ts";
 import type { AgentNote, Comp, PlanResult, SlateSnapshot, WatchChange, WatchEvent, WatchState, WatchSummary, WatchView } from "../shared/types.ts";
 import { BudgetExhaustedError, chat, LlmError, type LlmConfig } from "./openrouter.ts";
 import { normalizeComps, planStep, SlateNotReadyError } from "./plan.ts";
-import type { QlooClient } from "./qloo.ts";
+import { namedComps, type QlooClient } from "./qloo.ts";
 import { cachedSimulation, latestSnapshot, latestSnapshotId, loadWatch, saveWatch, simulationsSince, staleWatches, storeSimulation, watchesSince, type WatchRow } from "./store.ts";
 
 const MAX_EVENTS = 40;
@@ -116,7 +116,7 @@ export async function createWatch(
 ): Promise<WatchView> {
 	const snapshot = await latestSnapshot(ctx.db);
 	if (!snapshot) throw new SlateNotReadyError("The release slate is still being built");
-	const comps = parseComps(input.comps);
+	const given = parseComps(input.comps);
 	const weeks = listWeeks(snapshot.windowStart, snapshot.windowEnd);
 	const week = typeof input.week === "string" && weeks.includes(input.week) ? input.week : undefined;
 	if (!week) throw new WatchInputError("Pick a week on the calendar to watch");
@@ -125,6 +125,14 @@ export async function createWatch(
 	if (!options.featured && (await watchesSince(ctx.db, ctx.client, startOfToday())) >= ctx.dailyWatches) {
 		throw new WatchLimitError(`This address has started its ${ctx.dailyWatches} watches for today.`);
 	}
+	// A visitor's comps are named by Qloo, not by the request, so a watch (and its share card) shows only names Qloo knows.
+	const comps = options.featured
+		? given
+		: await namedComps(
+				ctx.qloo,
+				given.map((c) => c.id),
+			);
+	if (!comps) throw new WatchInputError("Qloo can't confirm these comps as released films right now");
 
 	const result = await check(ctx, { comps, you, from, week, followsYou: false }, snapshot);
 	if (result === "scoring") throw new WatchNotReadyError("Qloo is still scoring this audience. Try again in a moment.");

@@ -1,13 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Comparison } from "../engine/explain/compare.ts";
 import { AGE_BANDS, AGE_LABELS, type AudienceProfile } from "../engine/explain/demographics.ts";
 import { DECAY, eligibleWeeks, lastFullRun, planCalendar, recommend, verdict, YOUR_RUN, type Recommendation, type Verdict, type WeekScore } from "../engine/score/calendar.ts";
 import { fmtDay, narrate, percentLabel, runPhrase, topThreats } from "../engine/score/narrate.ts";
 import { addDays } from "../shared/dates.ts";
 import { ANCHOR_GAMES } from "../shared/games.ts";
-import type { PlanResult, RivalScore } from "../shared/types.ts";
-import { fetchAudience, fetchExplain } from "./api.ts";
+import type { PlanResult, RivalScore, ShareMeta } from "../shared/types.ts";
+import { createShare, fetchAudience, fetchExplain, fetchShareMeta } from "./api.ts";
 import type { Setup } from "./Planner.tsx";
+import { ShareButton } from "./Share.tsx";
 import { wikiUrl } from "./SlateList.tsx";
 import { WatchSection } from "./Watch.tsx";
 
@@ -270,6 +271,7 @@ function Hero(props: {
 	footnote: string;
 	onSelect: (week: string) => void;
 	onPlace: (week: string) => void;
+	share: ReactNode;
 }) {
 	const { v, focus, mine, best, weekMap, lead } = props;
 	const names = props.compNames.join(" + ");
@@ -379,6 +381,7 @@ function Hero(props: {
 						Plan my film for {fmtDay(focus.week)}
 					</button>
 				)}
+				{props.share}
 			</div>
 		</section>
 	);
@@ -862,6 +865,18 @@ export function PlanView({ result, setup, weeks }: { result: PlanResult; setup: 
 			if (clamped === original.get(id)?.week) delete moves[id];
 			return { ...w, moves };
 		});
+	// The plan's own link: a scenario, agent run or watch has one already; a custom plan is saved as one.
+	const shareLoad = useCallback(async (): Promise<ShareMeta> => {
+		if (setup.scenario) return fetchShareMeta({ scenario: setup.scenario });
+		if (setup.runId) return fetchShareMeta({ run: setup.runId });
+		if (setup.watchId) return fetchShareMeta({ watch: setup.watchId });
+		if (setup.shareId) return fetchShareMeta({ plan: setup.shareId });
+		const made = await createShare({ comps: setup.comps.map((c) => c.id), you: setup.you, from: setup.from });
+		const url = new URL(location.href);
+		url.searchParams.set("plan", made.id);
+		history.replaceState(null, "", url);
+		return made;
+	}, [setup]);
 	const openFor = (r: RivalScore) => {
 		setSelected(r.week);
 		setOpenRival(r.id);
@@ -907,6 +922,14 @@ export function PlanView({ result, setup, weeks }: { result: PlanResult; setup: 
 				footnote={footnote}
 				onSelect={(week) => select(week, true)}
 				onPlace={placeYou}
+				share={
+					<ShareButton
+						load={shareLoad}
+						label="Share this plan"
+						file={`clear-run-${setup.scenario ?? "plan"}.png`}
+						note={changes > 0 ? "The link opens this plan on the live calendar, without your what-if changes." : undefined}
+					/>
+				}
 			/>
 
 			<PressureCalendar

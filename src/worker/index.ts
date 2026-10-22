@@ -7,6 +7,7 @@ import { BudgetExhaustedError, DEFAULT_MODEL, LlmError, type LlmConfig } from ".
 import { normalizeComps, PlanInputError, planStep, SlateNotReadyError } from "./plan.ts";
 import { QlooClient, QlooError, QlooQuotaError, searchFilms } from "./qloo.ts";
 import type { Health } from "../shared/types.ts";
+import { cardImage, createSharedPlan, shareMeta, sharePage, sharedPlan, ShareInputError, ShareLimitError, targetOf } from "./share.ts";
 import { runSlateStep, slateIdle, JOB_NAME, type SlateJobState } from "./slate-job.ts";
 import { latestSnapshot, llmSpend, loadJob, qlooUsage, recentChanges } from "./store.ts";
 import { createWatch, getWatch, runWatchStep, seedFeatured, simulateWatch, WatchInputError, WatchLimitError, WatchNotReadyError } from "./watch.ts";
@@ -66,22 +67,30 @@ async function clientKey(c: AppContext): Promise<string> {
 
 const QLOO_ID = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
 
-/** Per-IP limit on routes that can spend Qloo quota or model budget. */
-async function rateLimited(c: AppContext): Promise<boolean> {
-	const { success } = await c.env.RATE_LIMITER.limit({ key: c.req.header("cf-connecting-ip") ?? "local" });
+/** Per-IP limit on routes that can spend Qloo quota or model budget, or draw a card. */
+async function overLimit(env: Env, request: Request): Promise<boolean> {
+	const { success } = await env.RATE_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") ?? "local" });
 	return !success;
 }
+
+const rateLimited = (c: AppContext) => overLimit(c.env, c.req.raw);
 
 function log(message: string, fields: Record<string, unknown> = {}): void {
 	console.log(JSON.stringify({ message, ...fields }));
 }
 
-// The offline demo seeds its local database on the first request.
+/** The offline demo seeds its local database on the first request. */
+async function demoReady(env: Env): Promise<void> {
+	const qloo = env.QLOO_MODE === "mock" ? qlooFor(env) : undefined;
+	if (qloo) await (await import("./demo.ts")).ensureDemo(env.DB, qloo);
+}
+
 app.use("*", async (c, next) => {
-	const qloo = c.env.QLOO_MODE === "mock" ? qlooFor(c.env) : undefined;
-	if (qloo) await (await import("./demo.ts")).ensureDemo(c.env.DB, qloo);
+	await demoReady(c.env);
 	await next();
 });
+
+const shareContext = (env: Env) => ({ db: env.DB, demo: env.QLOO_MODE === "mock" });
 
 app.get("/health", async (c) => {
 	const env = c.env;
@@ -237,6 +246,7 @@ function watchError(c: AppContext, error: unknown) {
 	if (error instanceof WatchLimitError) return c.json({ error: "limit", message: error.message }, 429);
 	if (error instanceof WatchNotReadyError) return c.json({ error: "not_ready", message: error.message }, 409);
 	if (error instanceof SlateNotReadyError) return c.json({ error: "slate_not_ready", message: error.message }, 503);
+	if (error instanceof QlooQuotaError) return c.json({ error: "quota", message: error.message }, 503);
 	if (error instanceof QlooError) return c.json({ error: "qloo_unavailable", message: "Qloo didn't answer. Try again in a moment." }, 502);
 	throw error;
 }
@@ -270,6 +280,35 @@ app.post("/watch/simulate", async (c) => {
 	} catch (error) {
 		return watchError(c, error);
 	}
+});
+
+/** A share link's preview, for the page's query (e.g. ?scenario=dunesday): the link, title, description and card image. */
+app.get("/card", async (c) => {
+	const url = new URL(c.req.url);
+	return c.json(await shareMeta(shareContext(c.env), url.origin, targetOf(url.searchParams)), 200, { "Cache-Control": "no-store" });
+});
+
+/** Saves a custom plan for a share link: {comps, you?, from}. Returns the link (?plan=) and its preview. */
+app.post("/share", async (c) => {
+	if (await rateLimited(c)) return c.json({ error: "rate_limited", message: "Too many requests from this address. Try again in a minute." }, 429);
+	const body = await c.req.json<{ comps?: unknown; you?: unknown; from?: unknown }>().catch(() => undefined);
+	if (!body) return c.json({ error: "bad_request", message: "Expected a JSON body" }, 400);
+	try {
+		const ctx = { ...shareContext(c.env), qloo: qlooFor(c.env), client: await clientKey(c), daily: numberOr(c.env.SHARE_DAILY, 30) };
+		return c.json(await createSharedPlan(ctx, new URL(c.req.url).origin, body), 201);
+	} catch (error) {
+		if (error instanceof ShareInputError || error instanceof PlanInputError) return c.json({ error: "bad_request", message: error.message }, 400);
+		if (error instanceof ShareLimitError) return c.json({ error: "limit", message: error.message }, 429);
+		if (error instanceof QlooQuotaError) return c.json({ error: "quota", message: error.message }, 503);
+		if (error instanceof QlooError) return c.json({ error: "qloo_unavailable", message: "Qloo didn't answer. Try again in a moment." }, 502);
+		throw error;
+	}
+});
+
+/** A shared plan, for ?plan= links. */
+app.get("/share", async (c) => {
+	const plan = await sharedPlan(c.env.DB, c.req.query("id") ?? "");
+	return plan ? c.json(plan, 200, { "Cache-Control": "public, max-age=300" }) : c.json({ error: "not_found" }, 404);
 });
 
 /** The backtest cases, as computed by the backtest job (no Qloo calls here). */
@@ -355,7 +394,20 @@ async function tick(env: Env): Promise<Record<string, unknown>> {
 }
 
 export default {
-	fetch: app.fetch,
+	/** The API, card images (/og/<hash>.png), and the page itself, with each share link's preview written into it. */
+	async fetch(request, env, ctx) {
+		const path = new URL(request.url).pathname;
+		if (path.startsWith("/api/") || (path !== "/" && !path.startsWith("/og/"))) return app.fetch(request, env, ctx);
+		await demoReady(env);
+		if (path.startsWith("/og/"))
+			return cardImage(
+				request,
+				env.DB,
+				(p) => ctx.waitUntil(p),
+				async () => !(await overLimit(env, request)),
+			);
+		return sharePage(request, env.ASSETS, shareContext(env), log);
+	},
 	async scheduled(_controller, env, ctx) {
 		ctx.waitUntil(
 			tick(env).then(

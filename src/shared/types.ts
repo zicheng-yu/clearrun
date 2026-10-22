@@ -267,3 +267,22 @@ export interface BaselineResult {
 	model?: string;
 	at: number;
 }
+
+/** A share link and its preview: the page title, description and card image a link unfurls into. */
+export interface ShareMeta {
+	/** The canonical link (absolute). */
+	url: string;
+	title: string;
+	description: string;
+	/** The card image (absolute): a 1200×630 PNG. */
+	image: string;
+	alt: string;
+}
+
+/** A custom plan saved for a share link (?plan=). Comp names come from Qloo, not from the client. */
+export interface SharedPlan {
+	id: string;
+	comps: Comp[];
+	you?: string;
+	from: string;
+}

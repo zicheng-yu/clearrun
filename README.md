@@ -4,7 +4,7 @@
 
 Built for the [Qloo Agentic Hackathon](https://qloo.devpost.com/) (2026). Live at **https://clearrun.zichengyu.com**.
 
-> Status: live. Ask the release agent a question in plain English, pick a featured scenario (Dunesday, GTA VI week, a family slot, indie horror), or describe your audience with released comps. Clear Run scores every rival on the live calendar, explains the overlap with Qloo taste tags, recommends weeks, and watches the plan: after every daily refresh it re-plans and logs what changed. Next to each agent answer, the same model with no tools answers the same question, and its dates are checked against the slate. The Backtests tab re-runs three same-day openings (Barbenheimer, Glicked, Sonic 3 and Mufasa) as Clear Run would have seen them eight weeks earlier. With no keys at all, `npm run dev:mock` runs the whole app on a frozen calendar and synthetic scores.
+> Status: live. Ask the release agent a question in plain English, pick a featured scenario (Dunesday, GTA VI week, a family slot, indie horror), or describe your audience with released comps. Clear Run scores every rival on the live calendar, explains the overlap with Qloo taste tags, recommends weeks, and watches the plan: after every daily refresh it re-plans and logs what changed. Next to each agent answer, the same model with no tools answers the same question, and its dates are checked against the slate. The Backtests tab re-runs three same-day openings (Barbenheimer, Glicked, Sonic 3 and Mufasa) as Clear Run would have seen them eight weeks earlier. Every plan, agent answer, watch and the backtests has a share link, and the link unfurls into a card drawn from the live data. With no keys at all, `npm run dev:mock` runs the whole app on a frozen calendar and synthetic scores.
 
 ## How it works
 
@@ -72,6 +72,14 @@ Built for the [Qloo Agentic Hackathon](https://qloo.devpost.com/) (2026). Live a
       - It answers when there's no model. It also takes over a run when the model budget is spent or the model doesn't answer, and such runs aren't replayed.
     - When Qloo can't be reached or a budget guard stops a call, older cached responses and scores are served, with a notice.
 
+12. **Share links and link previews** (`src/worker/share.ts`, `src/engine/share`):
+    - Every plan has a link: a featured scenario (`?scenario=`), an agent answer (`?run=`), a watch (`?watch=`) or the backtests (`?view=backtests`). A custom plan is saved as `?plan=<id>`; the ID comes from the plan itself, so the same plan always gets the same link.
+    - Social sites and chat apps read Open Graph tags without running the page's script. So the Worker serves the page itself: it reads the link's target, builds the target's card from cached data, and writes the title, description and card into `index.html`. No Qloo scoring or model calls are involved.
+    - The card (1200×630) is an SVG in the site's look, drawn with the verdict, the two pressures that matter and the pressure calendar in miniature. The Worker rasterizes it with resvg compiled to WebAssembly, with the fonts bundled (Bebas Neue, Inter and JetBrains Mono, subset to Latin), and encodes the PNG with the runtime's native deflate.
+    - Each card is stored in D1 under the hash of its contents, and the image is drawn on its first fetch. A card carries no date and rounds its bars, so the daily refresh only redraws it when the plan really changes.
+    - Cards show only data the server trusts: slate titles from Wikipedia, comp names from Qloo, and computed numbers. Text a visitor types, such as an agent question or a watch label, never reaches a card. Comp names on shared plans and on visitors' watches are looked up in Qloo by ID rather than taken from the request.
+    - In the app, **Share this plan** (and **Share the backtests**) opens the link with its card: copy the link, use the system share sheet, or download the card.
+
 Decay, seasonality and size scaling are assumptions, and the page labels them as such. Pressure is a relative index, not a box-office forecast.
 
 TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
@@ -92,6 +100,10 @@ TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
 | `GET /api/watch?id=` | A watch: its current state and change log |
 | `POST /api/watch/simulate` | `{id, rival, to}`: what the daily check would do if one rival moved (`to: null` takes it off the calendar) |
 | `GET /api/backtests` | The backtest cases, as stored by the backtest job (no Qloo calls) |
+| `GET /api/card?scenario=dunesday` | A share link's preview, for the same query the page takes: the link, title, description and card image |
+| `POST /api/share` | `{comps, you?, from}`: save a custom plan as a share link (`?plan=`); comp names come from Qloo |
+| `GET /api/share?id=` | A shared plan |
+| `GET /og/<hash>.png` | A card image (only cards the Worker built itself; drawn once, then cached) |
 | `GET /api/changes` | Date moves and new entrants between snapshots |
 | `GET /api/health` | Modes, slate status and budgets |
 
@@ -111,10 +123,17 @@ TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
   - While the slate refresh runs, each cron tick runs one refresh step. Once it's done, each tick re-plans the three least recently checked watches against the new slate.
   - Simulations are cached per (watch, slate, change).
 - **Backtests:** the job runs in small steps (at most two Qloo calls each), from an admin call or an idle cron tick, and stores its results. The page costs one D1 read.
+- **Share links:**
+  - The Worker runs first for `/` (and `/og/*`) so it can write each link's preview into the page. All other static files are served directly.
+  - A link's preview is computed once per slate snapshot and kept in D1. A page load is then two small reads: 1–4 ms of CPU in production, against about 30 ms for the first load after a refresh.
+  - The renderer (2.5 MB of Wasm) is imported only when a card has to be drawn. A cold draw takes 200–430 ms of CPU, once per card; after that the image comes from the edge cache or D1.
 - **Storage:** D1 holds snapshots, diffs, the Qloo caches, agent runs, watches, backtests and the spend ledgers. Nothing is kept in KV, whose free plan allows only 1,000 writes a day.
 - **Measured CPU** (production, Oct 22):
   - 1–8 ms per request for cached reads and plan steps served from the cache;
-  - 10–60 ms for steps that scan large Qloo responses or call the model. The Free plan tolerates these as occasional overruns, and none has failed so far.
+  - 10–60 ms for steps that scan large Qloo responses or call the model;
+  - 200–430 ms for a share card's one-time draw.
+
+  The Free plan tolerates these as occasional overruns, and none has failed so far.
 - **Hard budgets:**
   - Qloo: 25,000 requests a month (half of a shared key) and 1,500 a day, with a reserve on the key's shared remaining count. A per-IP rate limit applies to `/api/plan` and `/api/search`.
   - LLM: OpenRouter with `anthropic/claude-haiku-5.5` at low reasoning effort and automatic prompt caching.
@@ -168,13 +187,15 @@ npx cf deploy --secrets-file .dev.vars
 # After a deploy, POST /api/admin/backtest/step until "done" (or let the cron run it); ?rebuild=1 recomputes the stored cases with no Qloo calls.
 
 node scripts/build-fixtures.ts   # rebuilds the demo and backtest fixtures from open data (Wikipedia, Wikidata, pageviews)
+node scripts/build-card-fonts.ts # rebuilds the card fonts (Google Fonts, subset) and their width tables
+node scripts/render-cards.ts     # redraws public/og.png; with a site URL, previews the featured cards in /tmp
 ```
 
 Never commit keys or Qloo response data. The fixtures contain none: their only Qloo IDs are the featured comps' and the game proxies', already listed in `src/shared`.
 
 ## Data and attribution
 
-Release dates: Wikipedia (CC BY-SA 4.0), including each game's article and the 2023–2025 lists behind the backtests. IDs and genres: Wikidata (CC0). Attention: Wikimedia pageviews. Taste data by Qloo; the offline demo's taste scores are synthetic. Clear Run is not affiliated with any studio or publisher.
+Release dates: Wikipedia (CC BY-SA 4.0), including each game's article and the 2023–2025 lists behind the backtests. IDs and genres: Wikidata (CC0). Attention: Wikimedia pageviews. Taste data by Qloo; the offline demo's taste scores are synthetic. Card fonts: Bebas Neue, Inter and JetBrains Mono (SIL Open Font License 1.1; licenses in `src/worker/og/fonts`). Card rendering: resvg (MPL-2.0). Clear Run is not affiliated with any studio or publisher.
 
 ## License
 

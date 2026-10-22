@@ -13,9 +13,11 @@ export default defineConfig(({ mode }) => {
 			compatibilityDate: "2026-10-06",
 			compatibilityFlags: ["nodejs_compat"],
 			entrypoint,
+			// The Worker runs first for the API, for card images, and for the page itself, so it can write each share link's
+			// title, description and card into the page for link previews. Everything else is served straight from assets.
 			assets: {
 				notFoundHandling: "single-page-application",
-				runWorkerFirst: ["/api/*"],
+				runWorkerFirst: ["/api/*", "/og/*", "/"],
 			},
 			domains: ["clearrun.zichengyu.com"],
 			// One cron tick advances the slate refresh by one small step, so every invocation stays
@@ -34,6 +36,8 @@ export default defineConfig(({ mode }) => {
 				// Watches one client may start per UTC day, and fresh simulations that get an agent note.
 				WATCH_DAILY: bindings.text("10"),
 				SIM_DAILY: bindings.text("20"),
+				// Custom plans one client may save as share links per UTC day.
+				SHARE_DAILY: bindings.text("30"),
 				// OpenRouter model IDs: the agent's model and the fallbacks tried when its providers fail.
 				LLM_MODEL: bindings.text("anthropic/claude-haiku-5.5"),
 				LLM_FALLBACK_MODELS: bindings.text("deepseek/deepseek-v4-flash"),
@@ -53,6 +57,7 @@ export default defineConfig(({ mode }) => {
 				OPENROUTER_API_KEY: bindings.secret(),
 				ADMIN_TOKEN: bindings.secret(),
 				// The offline demo keeps its own local database, so it never mixes with live data (and is never deployed).
+				ASSETS: bindings.assets(),
 				DB: bindings.d1(mock ? { id: "00000000-0000-4000-8000-000000000de0", name: "clearrun-demo" } : { id: "fcf2a527-e528-4d34-8f3e-fb94eaa6c97d", name: "clearrun-db" }),
 				// Per-IP limit on routes that can spend Qloo quota (/api/plan steps and /api/search).
 				RATE_LIMITER: bindings.rateLimit({ namespace: "7311", simple: { limit: 20, period: 60 } }),

@@ -1,6 +1,7 @@
 import type { BacktestResult, BacktestSide, PairRank } from "../engine/backtest/run.ts";
 import { fmtDay, runPhrase } from "../engine/score/narrate.ts";
-import { useJson } from "./api.ts";
+import { fetchShareMeta, useJson } from "./api.ts";
+import { ShareButton } from "./Share.tsx";
 
 const card = "rounded-[18px] border border-line bg-stage";
 const index = (x: number) => Math.round(x * 100);
@@ -149,6 +150,11 @@ export function Backtests() {
 							Offline demo: these scores are synthetic (made from genre tags), so they say nothing about real audiences, and both readings agree by construction. With a Qloo key,
 							the same job runs on Qloo's content-based and behavioral scores.
 						</p>
+					)}
+					{cases.length > 0 && (
+						<div>
+							<ShareButton load={() => fetchShareMeta({ view: "backtests" })} label="Share the backtests" file="clear-run-backtests.png" />
+						</div>
 					)}
 					{error && <p className="text-sm text-hot">{error}</p>}
 					{data && cases.length === 0 && <p className="text-sm text-muted">The backtests haven't been computed yet. They run in small steps after the daily slate refresh.</p>}

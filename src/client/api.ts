@@ -1,7 +1,19 @@
 import { useEffect, useState } from "react";
 import type { Comparison } from "../engine/explain/compare.ts";
 import type { AudienceProfile } from "../engine/explain/demographics.ts";
-import type { AgentStepResponse, BaselineResult, Comp, PlanProgress, PlanRequest, PlanResponse, PlanResult, WatchEvent, WatchView } from "../shared/types.ts";
+import type {
+	AgentStepResponse,
+	BaselineResult,
+	Comp,
+	PlanProgress,
+	PlanRequest,
+	PlanResponse,
+	PlanResult,
+	ShareMeta,
+	SharedPlan,
+	WatchEvent,
+	WatchView,
+} from "../shared/types.ts";
 
 async function errorMessage(response: Response): Promise<string> {
 	const body = (await response.json().catch(() => ({}))) as { message?: string };
@@ -93,4 +105,25 @@ export async function simulateWatch(input: { id: string; rival: string; to: stri
 	const response = await fetch("/api/watch/simulate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
 	if (!response.ok) throw new Error(await errorMessage(response));
 	return (await response.json()) as WatchEvent;
+}
+
+/** A share link's preview for the page's query, e.g. {scenario: "dunesday"}: the link, title, description and card image. */
+export async function fetchShareMeta(params: Record<string, string>, signal?: AbortSignal): Promise<ShareMeta> {
+	const response = await fetch(`/api/card?${new URLSearchParams(params)}`, { signal });
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return (await response.json()) as ShareMeta;
+}
+
+/** Saves a custom plan as a share link (?plan=); the same plan always gets the same link. */
+export async function createShare(input: { comps: string[]; you?: string; from: string }): Promise<ShareMeta & { id: string }> {
+	const response = await fetch("/api/share", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return (await response.json()) as ShareMeta & { id: string };
+}
+
+export async function fetchSharedPlan(id: string, signal?: AbortSignal): Promise<SharedPlan | undefined> {
+	const response = await fetch(`/api/share?id=${encodeURIComponent(id)}`, { signal });
+	if (response.status === 404) return undefined;
+	if (!response.ok) throw new Error(await errorMessage(response));
+	return (await response.json()) as SharedPlan;
 }
