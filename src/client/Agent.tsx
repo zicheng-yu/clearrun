@@ -211,7 +211,10 @@ function Trace({ events, running }: { events: AgentEvent[]; running: boolean }) 
 	);
 }
 
-export function AgentPanel({ enabled, onPlan }: { enabled: boolean; onPlan: (plan: AgentPlan) => void }) {
+/** The scripted planner answers when there's no language model (the offline demo, or the model budget spent). */
+const SCRIPTED = "scripted planner";
+
+export function AgentPanel({ mode, onPlan }: { mode?: "llm" | "scripted"; onPlan: (plan: AgentPlan) => void }) {
 	const [question, setQuestion] = useState("");
 	const [run, setRun] = useState<Run>({ status: "idle" });
 	const abort = useRef<AbortController | undefined>(undefined);
@@ -299,44 +302,42 @@ export function AgentPanel({ enabled, onPlan }: { enabled: boolean; onPlan: (pla
 						Ask about a release date
 					</h2>
 				</div>
-				<span className="font-mono text-xs text-muted">Claude Haiku 5.5 · tools over the live slate and Qloo</span>
+				{mode && (
+					<span className="font-mono text-xs text-muted">
+						{mode === "llm" ? "Claude Haiku 5.5 · tools over the live slate and Qloo" : "Scripted planner · no language model · the same tools"}
+					</span>
+				)}
 			</div>
-			{!enabled ? (
-				<p className="text-sm text-muted">The AI agent is off right now. The scenarios and the planner work without it.</p>
-			) : (
-				<>
-					<form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
-						<input
-							value={question}
-							onChange={(e) => setQuestion(e.target.value)}
-							maxLength={500}
-							placeholder="e.g. When should my Hereditary-style horror film open?"
-							aria-label="Question for the release agent"
-							className={`${field} min-w-0 sm:flex-1`}
-						/>
-						<button
-							type="submit"
-							disabled={run.status === "running" || question.trim().length < 8}
-							className="h-11 shrink-0 rounded-[10px] bg-marquee px-5 text-[15px] font-semibold text-marquee-ink hover:brightness-110 disabled:opacity-40"
-						>
-							{run.status === "running" ? "Working…" : "Ask"}
-						</button>
-					</form>
-					<div className="flex flex-wrap gap-1.5">
-						{EXAMPLES.map((q) => (
-							<button
-								key={q}
-								type="button"
-								disabled={run.status === "running"}
-								onClick={() => ask(q)}
-								className="min-h-9 rounded-full border border-line px-3 text-left text-xs text-ink-2 hover:border-marquee disabled:opacity-40"
-							>
-								{q}
-							</button>
-						))}
-					</div>
-				</>
-			)}
+			<form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
+				<input
+					value={question}
+					onChange={(e) => setQuestion(e.target.value)}
+					maxLength={500}
+					placeholder="e.g. When should my Hereditary-style horror film open?"
+					aria-label="Question for the release agent"
+					className={`${field} min-w-0 sm:flex-1`}
+				/>
+				<button
+					type="submit"
+					disabled={run.status === "running" || question.trim().length < 8}
+					className="h-11 shrink-0 rounded-[10px] bg-marquee px-5 text-[15px] font-semibold text-marquee-ink hover:brightness-110 disabled:opacity-40"
+				>
+					{run.status === "running" ? "Working…" : "Ask"}
+				</button>
+			</form>
+			<div className="flex flex-wrap gap-1.5">
+				{EXAMPLES.map((q) => (
+					<button
+						key={q}
+						type="button"
+						disabled={run.status === "running"}
+						onClick={() => ask(q)}
+						className="min-h-9 rounded-full border border-line px-3 text-left text-xs text-ink-2 hover:border-marquee disabled:opacity-40"
+					>
+						{q}
+					</button>
+				))}
+			</div>
 
 			{run.status !== "idle" && (
 				<div className="grid gap-x-8 gap-y-5 border-t border-dashed border-line pt-5 lg:grid-cols-[1fr_1.3fr]">
@@ -360,8 +361,9 @@ export function AgentPanel({ enabled, onPlan }: { enabled: boolean; onPlan: (pla
 												: `All ${answer.check.dates} dates match this run's slate and Qloo results`}
 									</span>
 									<span>
-										{run.replay ? "Replayed from an earlier run (no model cost)" : `${answer.modelCalls} model calls · $${answer.costUsd.toFixed(4)}`}
-										{answer.model ? ` · ${answer.model}` : ""}
+										{answer.model === SCRIPTED
+											? `Scripted planner: fixed rules and a template, no model calls${answer.modelCalls > 0 ? ` (after ${answer.modelCalls} model calls · $${answer.costUsd.toFixed(4)})` : ""}`
+											: `${run.replay ? "Replayed from an earlier run (no model cost)" : `${answer.modelCalls} model calls · $${answer.costUsd.toFixed(4)}`}${answer.model ? ` · ${answer.model}` : ""}`}
 									</span>
 								</div>
 							</div>
@@ -371,7 +373,8 @@ export function AgentPanel({ enabled, onPlan }: { enabled: boolean; onPlan: (pla
 					</div>
 				</div>
 			)}
-			{run.status === "done" && run.runId && answer && <Baseline runId={run.runId} initial={run.baseline} />}
+			{/* The no-tools comparison needs the model; a scripted answer has none to compare. */}
+			{run.status === "done" && run.runId && answer && (run.baseline || (mode === "llm" && answer.model !== SCRIPTED)) && <Baseline runId={run.runId} initial={run.baseline} />}
 		</section>
 	);
 }

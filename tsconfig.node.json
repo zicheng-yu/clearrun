@@ -23,5 +23,9 @@
 		"test",
 		"src/engine",
 		"src/shared"
+	],
+	// Worker-level tests run the Worker's modules under Node (vitest); the Workers and Node global types don't mix.
+	"exclude": [
+		"test/worker"
 	]
 }

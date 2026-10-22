@@ -8,7 +8,7 @@ import { addDays, isoDay, releaseWeek } from "../shared/dates.ts";
 import { GAMES } from "../shared/games.ts";
 import type { SlateSnapshot, SlateTitle } from "../shared/types.ts";
 import { diffSlates } from "../engine/slate/diff.ts";
-import { entitiesByExternal, type QlooClient, type QlooEntity } from "./qloo.ts";
+import { entitiesByExternal, pickEntity, type QlooClient, type QlooEntity } from "./qloo.ts";
 import { parseFilmList, quarterSections } from "../engine/wiki/parse.ts";
 import { imdbIds, pageProps, pageSections, pageviews, sectionWikitext } from "../engine/wiki/client.ts";
 import { latestSnapshot, loadJob, saveJob, saveSnapshot, type JobRow } from "./store.ts";
@@ -155,7 +155,7 @@ async function advance(ctx: StepContext, job: JobRow<SlateJobState>): Promise<Jo
 			const ids = all.slice(job.cursor, job.cursor + size * 2);
 			if (ids.length === 0 || !ctx.qloo) return next(source === "wikidata" ? "imdb" : "views");
 			const mapped = new Set(s.titles.filter((t) => t.qloo).map(idOf));
-			const found = new Map<string, QlooEntity>();
+			const found = new Map<string, QlooEntity[]>();
 			for (const part of chunk(
 				ids.filter((id) => !mapped.has(id)),
 				size,
@@ -163,7 +163,7 @@ async function advance(ctx: StepContext, job: JobRow<SlateJobState>): Promise<Jo
 				for (const [k, v] of await entitiesByExternal(ctx.qloo, source, part)) found.set(k, v);
 			}
 			const titles = s.titles.map((t) => {
-				const e = found.get(idOf(t)?.toLowerCase() ?? "");
+				const e = pickEntity(found.get(idOf(t)?.toLowerCase() ?? ""), t.date);
 				return e && !t.qloo ? { ...t, qloo: { id: e.entity_id, name: e.name, popularity: e.popularity, release: e.properties?.release_date } } : t;
 			});
 			return { ...job, cursor: job.cursor + ids.length, state: { ...s, titles } };

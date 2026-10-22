@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { AgentInputError, AgentLimitError, agentRun, agentStep } from "./agent.ts";
+import { backtests, rebuildBacktests, restartBacktests, runBacktestStep } from "./backtest.ts";
 import { BaselineEmptyError, BaselineInputError, runBaseline } from "./baseline.ts";
 import { audienceOf, compareWithRival } from "./explain.ts";
 import { BudgetExhaustedError, DEFAULT_MODEL, LlmError, type LlmConfig } from "./openrouter.ts";
@@ -18,8 +19,12 @@ function numberOr(value: string | undefined, fallback: number): number {
 	return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-/** A Qloo client when live mode and the key are both present. */
+// The offline demo's synthetic Qloo and fixtures load only in mock mode, so a live isolate never parses them.
+const demoQloo = (url: string) => import("../engine/qloo/mock/transport.ts").then((m) => m.demoQloo(url));
+
+/** The offline demo's synthetic Qloo, or a live client when the key is present. */
 function qlooFor(env: Env): QlooClient | undefined {
+	if (env.QLOO_MODE === "mock") return new QlooClient({ apiKey: "demo", db: env.DB, monthlyCap: 0, dailyCap: 0, globalReserve: 0, transport: demoQloo });
 	const apiKey = env.QLOO_API_KEY?.trim();
 	if (env.QLOO_MODE !== "live" || !apiKey) return undefined;
 	return new QlooClient({
@@ -71,13 +76,20 @@ function log(message: string, fields: Record<string, unknown> = {}): void {
 	console.log(JSON.stringify({ message, ...fields }));
 }
 
+// The offline demo seeds its local database on the first request.
+app.use("*", async (c, next) => {
+	const qloo = c.env.QLOO_MODE === "mock" ? qlooFor(c.env) : undefined;
+	if (qloo) await (await import("./demo.ts")).ensureDemo(c.env.DB, qloo);
+	await next();
+});
+
 app.get("/health", async (c) => {
 	const env = c.env;
 	const [snapshot, job, spend, usage] = await Promise.all([latestSnapshot(env.DB), loadJob<SlateJobState>(env.DB, JOB_NAME), llmSpend(env.DB), qlooUsage(env.DB)]);
 	const agent = llmFor(env) ? "llm" : "scripted";
 	const body: Health = {
 		name: "Clear Run",
-		modes: { qloo: qlooFor(env) ? "live" : "mock", agent, model: agent === "llm" ? env.LLM_MODEL || DEFAULT_MODEL : undefined },
+		modes: { qloo: env.QLOO_MODE === "mock" ? "demo" : qlooFor(env) ? "live" : "off", agent, model: agent === "llm" ? env.LLM_MODEL || DEFAULT_MODEL : undefined },
 		slate: {
 			snapshotId: snapshot?.id,
 			createdAt: snapshot?.createdAt,
@@ -171,10 +183,9 @@ app.get("/audience", async (c) => {
 	}
 });
 
-/** One step of an agent run: start one with {question}, then repeat with {runId, after} until done. */
+/** One step of an agent run: start one with {question}, then repeat with {runId, after} until done. Without a model, the scripted planner answers. */
 app.post("/agent/step", async (c) => {
 	const llm = llmFor(c.env);
-	if (!llm) return c.json({ error: "agent_off", message: "The AI agent is off right now. The planner below works without it." }, 503);
 	if (await rateLimited(c)) return c.json({ error: "rate_limited", message: "Too many requests from this address. Try again in a minute." }, 429);
 	const body = await c.req.json<{ question?: unknown; runId?: unknown; after?: unknown }>().catch(() => undefined);
 	if (!body) return c.json({ error: "bad_request", message: "Expected a JSON body" }, 400);
@@ -261,6 +272,9 @@ app.post("/watch/simulate", async (c) => {
 	}
 });
 
+/** The backtest cases, as computed by the backtest job (no Qloo calls here). */
+app.get("/backtests", async (c) => c.json({ cases: await backtests(c.env.DB) }, 200, { "Cache-Control": "public, max-age=300" }));
+
 /** Released films by name, for picking comps. Cached for 7 days per query. */
 app.get("/search", async (c) => {
 	const q = (c.req.query("q") ?? "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -296,6 +310,17 @@ app.post("/admin/watch/step", async (c) => {
 	return c.json(await runWatchStep({ db: c.env.DB, qloo: qlooFor(c.env), llm: llmFor(c.env) }, numberOr(c.req.query("limit"), 3)));
 });
 
+/**
+ * Advances the backtest job by one step (at most two Qloo calls); repeat until "done". ?restart=1 starts it over;
+ * ?rebuild=1 recomputes the stored cases from the saved scores, with no Qloo calls.
+ */
+app.post("/admin/backtest/step", async (c) => {
+	if (!admin(c)) return c.json({ error: "forbidden" }, 403);
+	if (c.req.query("rebuild") === "1") return c.json({ rebuilt: await rebuildBacktests(c.env.DB, c.env.QLOO_MODE === "mock") });
+	if (c.req.query("restart") === "1") await restartBacktests(c.env.DB);
+	return c.json(await runBacktestStep({ db: c.env.DB, qloo: qlooFor(c.env) }));
+});
+
 /** Creates the featured scenarios' watches (IDs = scenario IDs); ?force=1 recreates them. */
 app.post("/admin/watch/seed", async (c) => {
 	if (!admin(c)) return c.json({ error: "forbidden" }, 403);
@@ -313,10 +338,18 @@ app.onError((err, c) => {
 	return c.json({ error: "internal_error" }, 500);
 });
 
-/** One cron tick: a step of the slate refresh while it runs, else a round of watch re-plans against the new slate. */
+/**
+ * One cron tick: a step of the slate refresh while it runs, else a round of watch re-plans against the new slate,
+ * else a step of the backtest job if it hasn't finished. The offline demo's slate is frozen, so it skips the refresh.
+ */
 async function tick(env: Env): Promise<Record<string, unknown>> {
 	const qloo = qlooFor(env);
-	if (slateIdle(await loadJob<SlateJobState>(env.DB, JOB_NAME))) return { watches: await runWatchStep({ db: env.DB, qloo, llm: llmFor(env) }) };
+	if (env.QLOO_MODE === "mock" || slateIdle(await loadJob<SlateJobState>(env.DB, JOB_NAME))) {
+		const watches = await runWatchStep({ db: env.DB, qloo, llm: llmFor(env) });
+		if (Object.values(watches).some((n) => n > 0)) return { watches };
+		const step = await runBacktestStep({ db: env.DB, qloo });
+		return step.calls > 0 || step.error ? { backtest: step } : { idle: true };
+	}
 	const job = await runSlateStep({ db: env.DB, qloo, days: numberOr(env.SLATE_DAYS, 180) });
 	return { slate: { phase: job.phase, cursor: job.cursor, error: job.error } };
 }

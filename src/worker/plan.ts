@@ -2,12 +2,13 @@
  * Scores the slate against one audience, one step per request (client-driven), so every invocation stays
  * inside the Workers Free plan. A step makes at most two Qloo calls, in parallel. Affinities are cached
  * per (audience, entity) in D1 for 7 days, so a repeat plan costs no Qloo calls; what-ifs run in the
- * browser on the returned scores.
+ * browser on the returned scores. When live scoring is off, out of budget or failing, older cached scores
+ * fill the gaps, so a featured plan keeps working after its cache expires.
  */
 import { percentiles, placeAmong, sizes } from "../engine/score/normalize.ts";
 import { ANCHOR_GAMES } from "../shared/games.ts";
 import type { PlanResponse, RivalScore, SlateSnapshot, SlateTitle } from "../shared/types.ts";
-import { insightsAffinities, QlooQuotaError, type QlooClient } from "./qloo.ts";
+import { insightsAffinities, QlooError, QlooQuotaError, type QlooClient } from "./qloo.ts";
 import { cachedAffinities, latestSnapshot, storeAffinities, type AffinityDomain } from "./store.ts";
 
 const FILM_BATCH = 30;
@@ -62,6 +63,7 @@ export async function planStep(
 
 	let calls = 0;
 	let notice: string | undefined;
+	let failed: QlooError | undefined;
 	const todo = missing();
 	if (ctx.qloo && (options.maxCalls ?? CALLS_PER_STEP) > 0 && (todo.movie.length > 0 || todo.videogame.length > 0)) {
 		const jobs: { domain: AffinityDomain; ids: string[] }[] = [];
@@ -86,15 +88,32 @@ export async function planStep(
 			await storeAffinities(ctx.db, signal, batches);
 			for (const b of batches) for (const id of b.asked) scores[b.domain].set(id, b.found.get(id) ?? null);
 		} catch (error) {
-			if (!(error instanceof QlooQuotaError)) throw error;
-			notice = error.message;
+			if (error instanceof QlooQuotaError) notice = error.message;
+			else if (error instanceof QlooError) failed = error;
+			else throw error;
 		}
 	}
 
-	const left = missing();
+	let left = missing();
 	const total = filmIds.length + gameIds.length;
-	const pending = left.movie.length + left.videogame.length;
-	if (pending > 0 && ctx.qloo && !notice) return { status: "scoring", scored: total - pending, total, qlooCalls: calls };
+	const count = () => left.movie.length + left.videogame.length;
+	if (count() > 0 && ctx.qloo && !notice && !failed) return { status: "scoring", scored: total - count(), total, qlooCalls: calls };
+	// Live scoring is off, out of budget or failing: older cached scores fill the gaps.
+	let stale = false;
+	if (count() > 0) {
+		for (const domain of ["movie", "videogame"] as const) {
+			const old = await cachedAffinities(ctx.db, signal, domain, Number.POSITIVE_INFINITY);
+			for (const id of left[domain]) {
+				if (!old.has(id)) continue;
+				scores[domain].set(id, old.get(id) ?? null);
+				stale = true;
+			}
+		}
+		left = missing();
+	}
+	// A passing error with nothing cached to fall back on: let the client retry.
+	if (failed && count() > 0) throw failed;
+	const pending = count();
 
 	const size = sizes(new Map(snapshot.titles.map((t) => [rivalId(t), t.views30d])));
 	const filmAffinity = new Map<string, number>();
@@ -137,6 +156,14 @@ export async function planStep(
 			gamesScored: scored.filter((r) => r.kind === "game" && r.overlap !== undefined).length,
 		},
 		qlooCalls: calls,
-		notice: notice ?? (pending > 0 ? "Live Qloo scoring is off here, so only cached scores are shown." : undefined),
+		notice:
+			notice ??
+			(failed
+				? "Qloo didn't answer, so scores cached earlier are shown."
+				: pending > 0
+					? "Live Qloo scoring is off here, so only cached scores are shown."
+					: stale
+						? "Live Qloo scoring is off here, so scores cached earlier are shown."
+						: undefined),
 	};
 }

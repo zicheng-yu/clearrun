@@ -1,4 +1,4 @@
-/** D1 storage: slate snapshots and changes, the refresh job, the Qloo caches, and spend ledgers. */
+/** D1 storage: slate snapshots and changes, jobs, the Qloo caches, spend ledgers, agent runs, watches and backtests. */
 import type { SlateChange, SlateSnapshot } from "../shared/types.ts";
 
 const SCHEMA = [
@@ -13,6 +13,7 @@ const SCHEMA = [
 	`CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, client TEXT NOT NULL, question_key TEXT NOT NULL, snapshot_id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS watches (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, checked_at INTEGER NOT NULL, client TEXT NOT NULL, snapshot_id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS sim_cache (key TEXT PRIMARY KEY, client TEXT NOT NULL, created_at INTEGER NOT NULL, body TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS backtests (id TEXT NOT NULL, version INTEGER NOT NULL, created_at INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (id, version))`,
 ];
 
 let ready: Promise<void> | undefined;
@@ -125,14 +126,14 @@ export async function recordQlooCall(db: D1Database, sharedRemaining: number | u
 export type AffinityDomain = "movie" | "videogame";
 
 /**
- * Cached affinities of one audience (`signal`: its sorted comp IDs) for entities in one domain.
- * `null` means Qloo was asked and returned no score.
+ * Cached affinities of one audience (`signal`: its sorted comp IDs) for entities in one domain, younger than
+ * `maxAgeMs` (Infinity for any age). `null` means Qloo was asked and returned no score.
  */
 export async function cachedAffinities(db: D1Database, signal: string, domain: AffinityDomain, maxAgeMs: number): Promise<Map<string, number | null>> {
 	await ensureSchema(db);
 	const rows = await db
 		.prepare("SELECT entity, affinity FROM affinity_cache WHERE signal = ?1 AND domain = ?2 AND created_at > ?3")
-		.bind(signal, domain, Date.now() - maxAgeMs)
+		.bind(signal, domain, Number.isFinite(maxAgeMs) ? Date.now() - maxAgeMs : -1)
 		.all<{ entity: string; affinity: number | null }>();
 	return new Map(rows.results.map((r) => [r.entity, r.affinity]));
 }
@@ -197,7 +198,7 @@ export async function saveAgentRun<S>(db: D1Database, run: AgentRunRow<S>): Prom
 	await db
 		.prepare(
 			`INSERT INTO agent_runs (id, created_at, updated_at, client, question_key, snapshot_id, status, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-			 ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, status = excluded.status, body = excluded.body`,
+			 ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, question_key = excluded.question_key, status = excluded.status, body = excluded.body`,
 		)
 		.bind(run.id, run.createdAt, Date.now(), run.client, run.questionKey, run.snapshotId, run.status, JSON.stringify(run.state))
 		.run();
@@ -303,4 +304,17 @@ export async function latestSnapshotId(db: D1Database): Promise<string | undefin
 	await ensureSchema(db);
 	const row = await db.prepare("SELECT id FROM snapshots ORDER BY created_at DESC LIMIT 1").first<{ id: string }>();
 	return row?.id;
+}
+
+/** Finished backtest cases for one method version. */
+export async function loadBacktests<T>(db: D1Database, version: number): Promise<T[]> {
+	await ensureSchema(db);
+	const rows = await db.prepare("SELECT body FROM backtests WHERE version = ?1").bind(version).all<{ body: string }>();
+	return rows.results.map((r) => JSON.parse(r.body) as T);
+}
+
+export async function saveBacktests(db: D1Database, version: number, cases: { id: string }[]): Promise<void> {
+	await ensureSchema(db);
+	const insert = db.prepare("INSERT OR REPLACE INTO backtests (id, version, created_at, body) VALUES (?1, ?2, ?3, ?4)");
+	await db.batch([...cases.map((c) => insert.bind(c.id, version, Date.now(), JSON.stringify(c))), db.prepare("DELETE FROM backtests WHERE version != ?1").bind(version)]);
 }

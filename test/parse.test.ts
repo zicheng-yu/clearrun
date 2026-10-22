@@ -27,6 +27,27 @@ describe("parseFilmList", () => {
 	});
 });
 
+// The older layout (2023–2024 lists): months spelled vertically, sometimes in bold, and repeated style attributes.
+const OLDER = [
+	'! rowspan="22" style="text-align:center; background:#f7bf87;" |J<br>U<br>L<br>Y',
+	"| rowspan=\"6\" style=\"text-align:center;\" style=\"text-align:center;background:#f7dfc7\" | '''21'''",
+	"| ''[[Barbie (film)|Barbie]]'' || Warner Bros. || Cast",
+	"|-",
+	"| ''Unlinked Film'' || Studio || Cast",
+	"| rowspan=\"43\" style=\"text-align:center; background:#bf87f7; text color:#000;\" |'''N<br>O<br>V<br>E<br>M<br>B<br>E<br>R'''",
+	"| rowspan=\"2\" style=\"text-align:center;background:#c7f7df\"| '''22'''",
+	"| ''[[Gladiator II]]'' || Paramount || Cast",
+].join("\n");
+
+describe("parseFilmList on older lists", () => {
+	it("reads vertically spelled months and skips titles without a page", () => {
+		expect(parseFilmList(OLDER, 2024)).toEqual([
+			{ date: "2024-07-21", title: "Barbie", page: "Barbie (film)" },
+			{ date: "2024-11-22", title: "Gladiator II", page: "Gladiator II" },
+		]);
+	});
+});
+
 describe("quarterSections", () => {
 	it("picks the quarterly tables that overlap the window", () => {
 		const sections = [

@@ -2,8 +2,9 @@ import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/worker/index.ts" with { type: "cf-worker" };
 
 export default defineConfig(({ mode }) => {
-	// `cf dev --mode mock` serves synthetic data with no keys. A deploy runs live: real Qloo data
-	// (QLOO_API_KEY) and, once the agent ships, OpenRouter (OPENROUTER_API_KEY). Secrets are uploaded
+	// `cf dev --mode mock` is the offline demo: a frozen copy of the slate, synthetic Qloo scores and the
+	// scripted agent, in its own local database, with no keys and no network. A deploy runs live: real Qloo
+	// data (QLOO_API_KEY) and the LLM agent over OpenRouter (OPENROUTER_API_KEY). Secrets are uploaded
 	// separately and never committed.
 	const mock = mode === "mock";
 	return {
@@ -26,8 +27,8 @@ export default defineConfig(({ mode }) => {
 			},
 			env: {
 				QLOO_MODE: bindings.text<"mock" | "live">(mock ? "mock" : "live"),
-				// "llm" runs the agent over OpenRouter; "scripted" turns it off (the planner still works).
-				AGENT_MODE: bindings.text<"scripted" | "llm">("llm"),
+				// "llm" runs the agent over OpenRouter; "scripted" answers with the scripted planner (no model).
+				AGENT_MODE: bindings.text<"scripted" | "llm">(mock ? "scripted" : "llm"),
 				// Agent runs one client may start per UTC day (replays of an answered question are free).
 				AGENT_DAILY_RUNS: bindings.text("12"),
 				// Watches one client may start per UTC day, and fresh simulations that get an agent note.
@@ -51,7 +52,8 @@ export default defineConfig(({ mode }) => {
 				QLOO_API_KEY: bindings.secret(),
 				OPENROUTER_API_KEY: bindings.secret(),
 				ADMIN_TOKEN: bindings.secret(),
-				DB: bindings.d1({ id: "fcf2a527-e528-4d34-8f3e-fb94eaa6c97d", name: "clearrun-db" }),
+				// The offline demo keeps its own local database, so it never mixes with live data (and is never deployed).
+				DB: bindings.d1(mock ? { id: "00000000-0000-4000-8000-000000000de0", name: "clearrun-demo" } : { id: "fcf2a527-e528-4d34-8f3e-fb94eaa6c97d", name: "clearrun-db" }),
 				// Per-IP limit on routes that can spend Qloo quota (/api/plan steps and /api/search).
 				RATE_LIMITER: bindings.rateLimit({ namespace: "7311", simple: { limit: 20, period: 60 } }),
 			},

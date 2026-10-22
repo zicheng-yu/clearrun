@@ -1,10 +1,10 @@
 /**
  * Parser for Wikipedia's "List of American films of {year}" release tables (CC BY-SA 4.0).
  *
- * Each quarterly table has month header cells (`! rowspan=… data-sort-value="MM" | …`), day cells
- * (`| rowspan=… | '''18'''`) and title rows that start with an italic link (`| ''[[Page|Title]]''`).
- * Months come from `data-sort-value`: the aria-label text is not reliable (December has been
- * spelled "Decmber").
+ * Each quarterly table has month header cells, day cells (`| rowspan=… | '''18'''`) and title rows that
+ * start with an italic link (`| ''[[Page|Title]]''`). Current lists give the month in `data-sort-value`
+ * (`! rowspan=… data-sort-value="MM" | …`): the aria-label text is not reliable (December has been
+ * spelled "Decmber"). Older lists (2023–2024) spell the month vertically instead (`|'''N<br>O<br>V…'''`).
  */
 
 export interface ListRow {
@@ -14,23 +14,32 @@ export interface ListRow {
 }
 
 const MONTH_HEADER = /^!.*rowspan="\d+".*data-sort-value="(\d{1,2})"/;
-const DAY_CELL = /^\|\s*(?:rowspan="\d+"\s*)?(?:style="[^"]*"\s*)?\|\s*'''(\d{1,2})'''/;
+// A header cell whose text is the month's letters, one per line ("J<br>U<br>L<br>Y"), sometimes in bold.
+const MONTH_LETTERS = /^[!|].*rowspan="\d+"[^|]*\|\s*(?:''')?((?:[A-Za-z]\s*<br\s*\/?>\s*)+[A-Za-z])(?:''')?\s*$/;
+const MONTH_NAMES = ["JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"];
+// Attributes vary by year (some rows repeat `style`), so any run of them may come before the day.
+const DAY_CELL = /^\|\s*(?:[a-z-]+="[^"]*"\s*)*\|\s*'''(\d{1,2})'''/;
 const TITLE_CELL = /^\|\s*''\[\[([^\]|]+)(?:\|([^\]]+))?\]\]''/;
 
 const pad = (n: number) => String(n).padStart(2, "0");
+
+/** The month (1–12) a header line opens, or 0 when the line isn't a month header. */
+function monthOf(line: string): number {
+	const header = MONTH_HEADER.exec(line);
+	if (header) return Number(header[1]);
+	const letters = MONTH_LETTERS.exec(line);
+	return letters ? MONTH_NAMES.indexOf((letters[1] ?? "").replace(/<br\s*\/?>|\s/g, "").toUpperCase()) + 1 : 0;
+}
 
 export function parseFilmList(wikitext: string, year: number): ListRow[] {
 	const rows: ListRow[] = [];
 	let month: number | undefined;
 	let day: number | undefined;
 	for (const line of wikitext.split("\n")) {
-		const header = MONTH_HEADER.exec(line);
-		if (header) {
-			const value = Number(header[1]);
-			if (value >= 1 && value <= 12) {
-				month = value;
-				day = undefined;
-			}
+		const value = monthOf(line);
+		if (value >= 1 && value <= 12) {
+			month = value;
+			day = undefined;
 		}
 		const dayCell = DAY_CELL.exec(line);
 		if (dayCell) {

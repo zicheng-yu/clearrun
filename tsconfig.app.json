@@ -27,6 +27,7 @@
 		"src/engine/explain",
 		"src/engine/agent",
 		"src/engine/watch",
-		"src/engine/baseline"
+		"src/engine/baseline",
+		"src/engine/backtest"
 	]
 }

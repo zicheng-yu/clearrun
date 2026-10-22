@@ -3,18 +3,21 @@
  * Qloo. The browser drives a run one step at a time. A step makes at most one model call and at most
  * one scoring step (up to two Qloo calls), so every invocation stays inside the Workers Free plan.
  * Runs live in D1, and a finished run is replayed at no model cost when the same question is asked
- * again against the same slate.
+ * again against the same slate. With no model (no key, the budget spent, or the model down), the
+ * scripted planner answers instead: fixed rules, the same tools, and a templated answer.
  */
 import { planBrief, rivalBrief, whatIfBrief, type BriefRival } from "../engine/agent/brief.ts";
+import { NEED_COMPS, readQuestion, scriptedAnswer, type PlanFacts } from "../engine/agent/scripted.ts";
 import { checkDates, matchTitles, normalizeTitle, parseDay } from "../engine/agent/text.ts";
 import { analyze } from "../engine/score/analyze.ts";
 import { leadWeek, listWeeks } from "../engine/score/calendar.ts";
 import { fmtDay } from "../engine/score/narrate.ts";
 import { isoDay, releaseWeek } from "../shared/dates.ts";
 import { GAMES } from "../shared/games.ts";
+import { SCENARIOS } from "../shared/scenarios.ts";
 import type { AgentEvent, AgentPlan, AgentStepResponse, BaselineResult, Comp, PlanResult, SlateSnapshot } from "../shared/types.ts";
 import { audienceOf, compareWithRival } from "./explain.ts";
-import { BudgetExhaustedError, chat, type ChatMessage, type LlmConfig, type ToolCall } from "./openrouter.ts";
+import { BudgetExhaustedError, chat, LlmError, type ChatMessage, type LlmConfig, type ToolCall } from "./openrouter.ts";
 import { normalizeComps, PlanInputError, planStep, SlateNotReadyError } from "./plan.ts";
 import { QlooError, QlooQuotaError, searchFilms, type QlooClient } from "./qloo.ts";
 import { agentRunsSince, findAgentReplay, latestSnapshot, loadAgentRun, saveAgentRun, type AgentRunRow } from "./store.ts";
@@ -24,6 +27,7 @@ const MAX_MODEL_CALLS = 6;
 const MAX_TOKENS = 2000;
 const SCORING_CALLS_PER_STEP = 2;
 const REPLAY_WINDOW_MS = 24 * 3600 * 1000;
+const FALLBACK = "#fallback";
 
 export class AgentInputError extends Error {}
 export class AgentLimitError extends Error {}
@@ -126,12 +130,15 @@ interface RunState {
 	model?: string;
 	/** The no-tools comparison, added by runBaseline once someone asks for it. */
 	baseline?: BaselineResult;
+	/** Set when the scripted planner answers this run, with the reason. */
+	scripted?: { reason: string; started?: boolean };
 }
 
 export interface AgentContext {
 	db: D1Database;
 	qloo?: QlooClient;
-	llm: LlmConfig;
+	/** The model; without one, the scripted planner answers. */
+	llm?: LlmConfig;
 	/** Hashed client address, for the daily per-client cap. */
 	client: string;
 	dailyRuns: number;
@@ -400,9 +407,100 @@ async function runTools(ctx: ToolContext, state: RunState, calls: ToolCall[]): P
 	return false;
 }
 
+/** Runs one tool for the scripted planner, with the same trace events and evidence as a model's tool call. */
+async function scriptedTool(tools: ToolContext, state: RunState, snapshot: SlateSnapshot, name: string, args: Record<string, unknown>): Promise<ToolOutcome> {
+	const call: ToolCall = { id: `s${state.events.length}`, type: "function", function: { name, arguments: JSON.stringify(args) } };
+	state.events.push({ type: "call", id: call.id, tool: name, label: callLabel(call, state, snapshot) });
+	const outcome = await runTool(tools, state, call);
+	if (!outcome.done) {
+		state.pending = [call];
+		state.events.push({ type: "progress", text: outcome.progress });
+		return outcome;
+	}
+	state.messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(outcome.content) });
+	state.events.push({ type: "result", id: call.id, tool: name, summary: outcome.summary, ...(outcome.error ? { error: true } : {}) });
+	return outcome;
+}
+
+/** The released films a find_titles result offers for one query: the exact name first, else the closest ones. */
+function compsFrom(content: unknown, query: string, franchise: boolean, exclude: string): Comp[] {
+	const released = ((content as { released?: Comp[] })?.released ?? []).filter((c) => normalizeTitle(c.name) !== normalizeTitle(exclude));
+	if (!franchise) {
+		const exact = released.find((c) => normalizeTitle(c.name) === normalizeTitle(query));
+		return exact ? [exact] : released.slice(0, 1);
+	}
+	// A dated sequel's comps are its released predecessors, newest first.
+	const key = normalizeTitle(query).replace(/^the /, "");
+	const thisYear = new Date().getUTCFullYear();
+	return released
+		.filter((c) => normalizeTitle(c.name).replace(/^the /, "").startsWith(key) && (c.year ?? 0) < thisYear + 1)
+		.sort((a, b) => (b.year ?? 0) - (a.year ?? 0))
+		.slice(0, 2);
+}
+
+function finish(state: RunState, text: string): true {
+	const evidence = state.messages.map((m) => (m.role === "tool" || m.role === "user" ? m.content : "")).join("\n");
+	state.events.push({
+		type: "answer",
+		text,
+		check: checkDates(text, evidence),
+		costUsd: Math.round(state.costUsd * 1e6) / 1e6,
+		modelCalls: state.modelCalls,
+		model: "scripted planner",
+		...(state.tokens ? { tokens: state.tokens } : {}),
+	});
+	return true;
+}
+
+/** One step of the scripted planner. The first step reads the question, finds comps and plans; scoring can take more steps. */
+async function advanceScripted(ctx: AgentContext, run: AgentRunRow<RunState>, snapshot: SlateSnapshot): Promise<boolean> {
+	const state = run.state;
+	const tools: ToolContext = { db: ctx.db, qloo: ctx.qloo, snapshot, scoringCalls: SCORING_CALLS_PER_STEP };
+	const answer = () => {
+		const last = [...state.messages].reverse().find((m) => m.role === "tool");
+		const facts = last ? (JSON.parse(last.content) as PlanFacts & { error?: string }) : undefined;
+		if (!facts || facts.error || !state.plan)
+			return finish(state, `I couldn't finish this plan${facts?.error ? `: ${facts.error}` : ""}. Try again with one or two comparable released films.`);
+		return finish(
+			state,
+			scriptedAnswer(
+				facts,
+				state.plan.comps.map((c) => c.short ?? c.name),
+			),
+		);
+	};
+	if (state.pending.length > 0) return (await runTools(tools, state, state.pending)) ? false : answer();
+	if (state.scripted?.started) return answer();
+	state.scripted = { reason: state.scripted?.reason ?? "No language model is set up here.", started: true };
+	state.events.push({
+		type: "thought",
+		text: `${state.scripted.reason} The scripted planner answers instead: fixed rules read the question, and the same tools run in a fixed order.`,
+	});
+
+	// A featured question gets its scenario's comps; anything else is read with fixed rules.
+	const scenario = SCENARIOS.find((x) => normalizeTitle(x.question) === normalizeTitle(state.question));
+	const intent = readQuestion(state.question, snapshot.titles, windowOf(snapshot));
+	let comps: Comp[] = scenario?.comps ?? [];
+	const you = scenario ? scenario.you : intent.you?.id;
+	if (!scenario) {
+		const queries = intent.compQueries.length ? intent.compQueries : intent.franchise ? [intent.franchise] : [];
+		for (const query of queries) {
+			const found = await scriptedTool(tools, state, snapshot, "find_titles", { query });
+			if (found.done) comps.push(...compsFrom(found.content, query, !intent.compQueries.length, intent.you?.title ?? ""));
+		}
+		comps = [...new Map(comps.map((c) => [c.id.toUpperCase(), c])).values()].slice(0, 3);
+	}
+	for (const c of comps) state.names[c.id.toUpperCase()] = c;
+	if (comps.length === 0) return finish(state, NEED_COMPS);
+	const earliest = scenario?.from ?? intent.earliest;
+	const planned = await scriptedTool(tools, state, snapshot, "plan_release", { comps: comps.map((c) => c.id), ...(you ? { you } : {}), ...(earliest ? { earliest } : {}) });
+	return planned.done ? answer() : false;
+}
+
 /** One step: finish pending tools, then at most one model call and the tools it asks for. Returns true when the run is done. */
 async function advance(ctx: AgentContext, run: AgentRunRow<RunState>, snapshot: SlateSnapshot): Promise<boolean> {
 	const state = run.state;
+	if (!ctx.llm || state.scripted) return advanceScripted(ctx, run, snapshot);
 	const tools: ToolContext = { db: ctx.db, qloo: ctx.qloo, snapshot, scoringCalls: SCORING_CALLS_PER_STEP };
 	if (state.pending.length > 0 && (await runTools(tools, state, state.pending))) return false;
 
@@ -417,9 +515,11 @@ async function advance(ctx: AgentContext, run: AgentRunRow<RunState>, snapshot: 
 			sessionId: run.id,
 		});
 	} catch (error) {
-		if (!(error instanceof BudgetExhaustedError)) throw error;
-		state.events.push({ type: "error", text: error.message });
-		return true;
+		// No model to answer: the scripted planner takes over the run from its question.
+		if (!(error instanceof BudgetExhaustedError) && !(error instanceof LlmError)) throw error;
+		state.pending = [];
+		state.scripted = { reason: error instanceof BudgetExhaustedError ? "The AI agent's budget for today is spent." : "The model didn't answer." };
+		return advanceScripted(ctx, run, snapshot);
 	}
 	state.modelCalls += 1;
 	state.costUsd += result.usage.costUsd;
@@ -501,6 +601,8 @@ export async function agentStep(ctx: AgentContext, input: { question?: unknown; 
 
 	const done = await advance(ctx, run, snapshot);
 	run.status = done ? "done" : "running";
+	// A run the scripted planner finished because the model failed isn't replayed: the next ask gets the model again.
+	if (ctx.llm && run.state.scripted && !run.questionKey.endsWith(FALLBACK)) run.questionKey += FALLBACK;
 	await saveAgentRun(ctx.db, run);
 	return response(run, after);
 }

@@ -55,7 +55,8 @@ export interface SlateChange {
 
 export interface Health {
 	name: "Clear Run";
-	modes: { qloo: "live" | "mock"; agent: "llm" | "scripted"; model?: string };
+	/** "demo" is the offline demo's synthetic Qloo; "off" means no Qloo key, so only cached scores are served. */
+	modes: { qloo: "live" | "demo" | "off"; agent: "llm" | "scripted"; model?: string };
 	slate: { snapshotId?: string; createdAt?: number; stats?: SlateStats; job?: { phase: string; updatedAt: number; error?: string } };
 	budgets: {
 		llm: { todayUsd: number; totalUsd: number; dailyCapUsd: number; totalCapUsd: number };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { planBrief, whatIfBrief, type BriefRival } from "../src/engine/agent/brief.ts";
+import { franchiseOf, readQuestion, scriptedAnswer } from "../src/engine/agent/scripted.ts";
 import { checkDates, datesIn, matchTitles, normalizeTitle, parseDay, parseWeek } from "../src/engine/agent/text.ts";
 import { analyze } from "../src/engine/score/analyze.ts";
 
@@ -70,5 +71,77 @@ describe("agent briefs", () => {
 		expect(brief.change).toBe("Alpha moved to Dec 25");
 		expect(brief.yourTitle?.pressure).toBeLessThan(100);
 		expect(rivals[0]?.week).toBe("2026-11-20");
+	});
+});
+
+describe("scripted planner", () => {
+	const window = { start: "2026-10-22", end: "2027-04-20" };
+	const slate = [
+		{ id: "Q1", title: "Dune: Part Three", kind: "film" as const },
+		{ id: "Q2", title: "Avengers: Doomsday", kind: "film" as const },
+		{ id: "Q3", title: "Grand Theft Auto VI", kind: "game" as const },
+		{ id: "Q4", title: "The Hunger Games: Sunrise on the Reaping", kind: "film" as const },
+		{ id: "Q5", title: "Remain", kind: "film" as const },
+	];
+
+	it("takes the first film the question names as the title being planned", () => {
+		expect(readQuestion("Should Dune: Part Three move away from Avengers: Doomsday?", slate, window)).toMatchObject({
+			you: { id: "Q1", title: "Dune: Part Three" },
+			others: ["Avengers: Doomsday"],
+			compQueries: [],
+			franchise: "Dune",
+		});
+		// A game named first isn't the title being planned; its alias still counts as a mention.
+		expect(readQuestion("Will GTA VI hurt The Hunger Games: Sunrise on the Reaping?", slate, window)).toMatchObject({ you: { id: "Q4" }, others: ["Grand Theft Auto VI"] });
+	});
+
+	it("needs a one-word title's own capitalization", () => {
+		expect(readQuestion("Can my film remain clear of the holidays?", slate, window).you).toBeUndefined();
+		expect(readQuestion("Should Remain move?", slate, window).you).toMatchObject({ id: "Q5" });
+	});
+
+	it("reads comps after cue words, and a start date", () => {
+		expect(readQuestion("When should an original horror film like Hereditary open in early 2027?", slate, window)).toMatchObject({
+			compQueries: ["Hereditary"],
+			earliest: "2027-01-01",
+		});
+		expect(readQuestion("A family film like The Wild Robot and Paddington 2.", slate, window).compQueries).toEqual(["The Wild Robot", "Paddington 2"]);
+		expect(readQuestion("For fans of Dune: Part Two, Arrival, after Jan 15", slate, window)).toMatchObject({ compQueries: ["Dune: Part Two", "Arrival"], earliest: "2027-01-15" });
+		expect(readQuestion("Which week in February works?", slate, window).earliest).toBe("2027-02-01");
+	});
+
+	it("finds a franchise from a sequel's title", () => {
+		expect(franchiseOf("Dune: Part Three")).toBe("Dune");
+		expect(franchiseOf("Sonic the Hedgehog 4")).toBe("Sonic the Hedgehog");
+		expect(franchiseOf("Toy Story 5")).toBe("Toy Story");
+	});
+
+	it("writes the answer from plan_release's facts only", () => {
+		const text = scriptedAnswer(
+			{
+				yourTitle: {
+					title: "Yours",
+					opens: "Dec 18",
+					verdict: "hold",
+					rank: "2 of 19 weeks by clear score",
+					pressure: 40,
+					mainPressure: ["Alpha (opening that week)"],
+					bestAlternative: { week: "Mar 12", pressure: 30 },
+				},
+				topRivals: [{ title: "Alpha", opens: "Dec 18", overlap: "p90" }],
+				clearWeeks: [{ week: "Mar 12", pressure: 30, season: "Spring break", nearby: [] }],
+				dangerWeeks: [{ week: "Nov 20", pressure: 100, ledBy: ["Beta (opening that week)"] }],
+				mainRival: { title: "Alpha", sharedTags: ["Epic", "Space opera"] },
+			},
+			["Comp One", "Comp Two"],
+		);
+		expect(text.split("\n")).toEqual([
+			"Hold Yours on Dec 18: for fans of Comp One and Comp Two, its week ranks #2 of 19 weeks by clear score.",
+			"- Dec 18 rates pressure 40 of 100, mostly from Alpha (opening that week).",
+			"- Clearest weeks: Mar 12 (pressure 30, Spring break).",
+			"- Most crowded: Nov 20, pressure 100, led by Beta (opening that week).",
+			"- Alpha shares these taste tags with the comps: Epic, Space opera.",
+			"Comps: Comp One and Comp Two. Pressure is a relative index, not a box-office forecast, and unreleased films are scored from their metadata.",
+		]);
 	});
 });

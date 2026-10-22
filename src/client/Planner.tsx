@@ -149,7 +149,7 @@ function Intro({ slate }: { slate?: SlateSnapshot }) {
 	);
 }
 
-export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent: boolean }) {
+export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent?: "llm" | "scripted" }) {
 	const weeks = useMemo(() => (slate ? listWeeks(slate.windowStart, slate.windowEnd) : []), [slate]);
 	const defaultFrom = useMemo(() => weeks.find((w) => w >= addDays(isoDay(new Date()), 28)) ?? weeks[0] ?? "", [weeks]);
 	const films = useMemo(() => (slate?.titles ?? []).filter((t) => t.kind === "film"), [slate]);
@@ -269,7 +269,7 @@ export function Planner({ slate, agent }: { slate?: SlateSnapshot; agent: boolea
 			</aside>
 
 			<div className="flex min-w-0 flex-[999_1_640px] flex-col gap-7">
-				<AgentPanel enabled={agent} onPlan={fromAgent} />
+				<AgentPanel mode={agent} onPlan={fromAgent} />
 				<div ref={results} className="flex flex-col gap-7">
 					{run.status === "idle" && <Intro slate={slate} />}
 					{run.status === "running" && (

@@ -2,6 +2,8 @@
  * Qloo client for the hackathon host (GET only). Every live request goes through three guards: this
  * app's monthly cap (half of the key's shared quota), a daily cap, and a reserve on the shared remaining
  * count reported by Qloo's rate-limit headers. Responses are cached privately in D1, never in the repo.
+ * When Qloo can't be reached or a budget is spent, an expired cached response is served instead. The offline
+ * demo passes a `transport` that answers from synthetic data, with no guards and no usage recorded.
  */
 import { scanAffinities } from "../engine/qloo/scan.ts";
 import type { Comp } from "../shared/types.ts";
@@ -31,6 +33,8 @@ export interface QlooOptions {
 	monthlyCap: number;
 	dailyCap: number;
 	globalReserve: number;
+	/** Answers requests in place of the network (the offline demo). Nothing is guarded or recorded. */
+	transport?: (url: string, init: RequestInit) => Promise<Response>;
 }
 
 export interface GetOptions<T> {
@@ -52,16 +56,46 @@ export class QlooClient {
 		this.options = options;
 	}
 
-	/** GET a Qloo path. Cached values younger than `ttlSec` are returned without spending quota. */
+	/** True for the offline demo's synthetic Qloo. */
+	get demo(): boolean {
+		return Boolean(this.options.transport);
+	}
+
+	/**
+	 * GET a Qloo path. Cached values younger than `ttlSec` are returned without spending quota; an older cached
+	 * value is returned when the live call can't be made (a budget guard, an error, or no network).
+	 */
 	async get<T>(path: string, params: Record<string, string>, options: GetOptions<T> = {}): Promise<T> {
 		const { db } = this.options;
 		const ttlSec = options.ttlSec ?? 7 * 24 * 3600;
 		await ensureSchema(db);
 		const query = new URLSearchParams(Object.entries(params).sort(([a], [b]) => a.localeCompare(b))).toString();
 		const key = ttlSec > 0 ? await sha256(`${path}?${query}`) : undefined;
+		let stale: string | undefined;
 		if (key) {
 			const cached = await db.prepare("SELECT created_at, body FROM qloo_cache WHERE key = ?1").bind(key).first<{ created_at: number; body: string }>();
 			if (cached && Date.now() - cached.created_at < ttlSec * 1000) return JSON.parse(cached.body) as T;
+			stale = cached?.body;
+		}
+		try {
+			const value = await this.request(path, query, options);
+			if (key) await db.prepare("INSERT OR REPLACE INTO qloo_cache (key, created_at, body) VALUES (?1, ?2, ?3)").bind(key, Date.now(), JSON.stringify(value)).run();
+			return value;
+		} catch (error) {
+			if (stale !== undefined && (error instanceof QlooQuotaError || error instanceof QlooError || error instanceof TypeError)) return JSON.parse(stale) as T;
+			throw error;
+		}
+	}
+
+	private async request<T>(path: string, query: string, options: GetOptions<T>): Promise<T> {
+		const { db, transport } = this.options;
+		const url = `${QLOO_BASE}${path}?${query}`;
+		const init = { headers: { "X-Api-Key": this.options.apiKey, Accept: "application/json" } };
+		if (transport) {
+			const response = await transport(url, init);
+			if (!response.ok) throw new QlooError(response.status, `Qloo ${path} ${response.status}`);
+			const body = await response.text();
+			return options.reduce ? options.reduce(body) : (JSON.parse(body) as T);
 		}
 
 		const usage = await qlooUsage(db);
@@ -71,16 +105,14 @@ export class QlooClient {
 			throw new QlooQuotaError("The shared Qloo quota is nearly exhausted; serving cached data only");
 		}
 
-		const response = await fetch(`${QLOO_BASE}${path}?${query}`, { headers: { "X-Api-Key": this.options.apiKey, Accept: "application/json" } });
+		const response = await fetch(url, init);
 		// A missing header must not read as "0 remaining", which would block every later call.
 		const header = response.headers.get("X-Month-RateLimit-Remaining");
 		const remaining = header === null || header.trim() === "" ? undefined : Number(header);
 		await recordQlooCall(db, remaining !== undefined && Number.isFinite(remaining) ? remaining : undefined);
 		if (!response.ok) throw new QlooError(response.status, `Qloo ${path} ${response.status}`);
 		const body = await response.text();
-		const value = options.reduce ? options.reduce(body) : (JSON.parse(body) as T);
-		if (key) await db.prepare("INSERT OR REPLACE INTO qloo_cache (key, created_at, body) VALUES (?1, ?2, ?3)").bind(key, Date.now(), JSON.stringify(value)).run();
-		return value;
+		return options.reduce ? options.reduce(body) : (JSON.parse(body) as T);
 	}
 }
 
@@ -91,8 +123,11 @@ export interface QlooEntity {
 	properties?: { release_date?: string; external?: Record<string, { id?: string }> };
 }
 
-/** `/entities` lookup by external IDs. Wikidata IDs must be lowercase (q123) on the hackathon host. */
-export async function entitiesByExternal(client: QlooClient, source: "wikidata" | "imdb", ids: string[]): Promise<Map<string, QlooEntity>> {
+/**
+ * `/entities` lookup by external IDs, with every entity found for each ID: one Wikidata item can carry more than
+ * one Qloo entity (Wicked's item maps to both films). Wikidata IDs must be lowercase (q123) on the hackathon host.
+ */
+export async function entitiesByExternal(client: QlooClient, source: "wikidata" | "imdb", ids: string[]): Promise<Map<string, QlooEntity[]>> {
 	const normalized = source === "wikidata" ? ids.map((id) => id.toLowerCase()) : ids;
 	const data = await client.get<{ results?: QlooEntity[] }>(
 		"/entities",
@@ -115,12 +150,22 @@ export async function entitiesByExternal(client: QlooClient, source: "wikidata" 
 			},
 		},
 	);
-	const out = new Map<string, QlooEntity>();
+	const out = new Map<string, QlooEntity[]>();
 	for (const entity of data.results ?? []) {
-		const id = entity.properties?.external?.[source]?.id;
-		if (id) out.set(id.toLowerCase(), entity);
+		const id = entity.properties?.external?.[source]?.id?.toLowerCase();
+		if (id) out.set(id, [...(out.get(id) ?? []), entity]);
 	}
 	return out;
+}
+
+/** The entity whose Qloo release date is closest to the title's own date (the first one when none has a date). */
+export function pickEntity(found: QlooEntity[] | undefined, date: string): QlooEntity | undefined {
+	if (!found || found.length < 2) return found?.[0];
+	const gap = (e: QlooEntity) => {
+		const t = Date.parse(e.properties?.release_date ?? "");
+		return Number.isFinite(t) ? Math.abs(t - Date.parse(date)) : Number.POSITIVE_INFINITY;
+	};
+	return [...found].sort((a, b) => gap(a) - gap(b))[0];
 }
 
 /**
