@@ -91,6 +91,11 @@ export function narrate(input: NarrateInput): string[] {
 	}
 
 	if (input.recommendation.clear.length) out.push(`Clearest weeks: ${join(input.recommendation.clear.map(label))}.`);
+	// The last week a full run fits is where the calendar is thinnest: releases that far out are still being dated.
+	const point = input.verdict ? (input.verdict.hold ? undefined : input.verdict.best) : input.recommendation.clear[0];
+	if (point && point === input.window?.latest) {
+		out.push(`${fmtDay(point)} is the last week whose first four weeks fit on the calendar, and releases that far out are still being dated: rivals may yet land there.`);
+	}
 	if (input.recommendation.danger.length) {
 		out.push(
 			`Most crowded for this audience: ${join(

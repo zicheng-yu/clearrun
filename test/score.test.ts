@@ -150,5 +150,19 @@ describe("planCalendar", () => {
 			"Most crowded for this audience: Nov 20 (led by Alpha).",
 			"Counter-programming: Nov 6 (a big crowd for Charlie, mostly not yours).",
 		]);
+		// An alternative on the last week a full run fits says the calendar is still filling in there.
+		const far = narrate({
+			compNames: ["Comp One"],
+			rivals: [],
+			calendar: cal,
+			recommendation: recommend(cal),
+			window: { latest: "2026-12-04" },
+			verdict: verdict(cal, "2026-11-20"),
+			you: { title: "Yours", date: "2026-11-20", week: "2026-11-20" },
+			scored: 0,
+			total: 0,
+		});
+		expect(far).toContain("Dec 4 is the last week whose first four weeks fit on the calendar, and releases that far out are still being dated: rivals may yet land there.");
+		expect(lines.some((l) => l.includes("still being dated"))).toBe(false);
 	});
 });

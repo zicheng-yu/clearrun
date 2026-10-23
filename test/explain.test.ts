@@ -7,9 +7,9 @@ describe("reduceCompare", () => {
 		const raw = {
 			results: {
 				tags: [
-					{ name: "Adventure", subtype: "urn:tag:genre:media", query: { score: 0.731 } },
-					{ name: "Epic", subtype: "urn:tag:plot:qloo", query: { score: 0.726 } },
-					{ name: "Adventure", subtype: "urn:tag:genre:qloo", query: { score: 0.72 } },
+					{ name: "Adventure", subtype: "urn:tag:genre:media", query: { score: 0.9 } },
+					{ name: "Epic", subtype: "urn:tag:plot:qloo", query: { score: 0.8 } },
+					{ name: "Adventure", subtype: "urn:tag:genre:qloo", query: { score: 0.7 } },
 				],
 				a: [
 					{ name: "Prophecy", subtype: "urn:tag:keyword:qloo", query: { count: "1" } },
@@ -25,8 +25,8 @@ describe("reduceCompare", () => {
 		};
 		expect(reduceCompare(raw)).toEqual({
 			shared: [
-				{ name: "Adventure", kind: "genre", score: 0.731 },
-				{ name: "Epic", kind: "plot", score: 0.726 },
+				{ name: "Adventure", kind: "genre", score: 0.9 },
+				{ name: "Epic", kind: "plot", score: 0.8 },
 			],
 			onlyYours: [
 				{ name: "Philosophical", kind: "style" },
@@ -41,7 +41,7 @@ describe("reduceCompare", () => {
 describe("demographics", () => {
 	it("averages comps and describes the skew", () => {
 		const entry = (young: number, male: number) => ({
-			query: { age: { "24_and_younger": young, "25_to_29": 0.43, "30_to_34": 0.3, "35_to_44": -0.66, "45_to_54": -0.36, "55_and_older": -0.56 }, gender: { male } },
+			query: { age: { "24_and_younger": young, "25_to_29": 0.4, "30_to_34": 0.3, "35_to_44": -0.6, "45_to_54": -0.4, "55_and_older": -0.5 }, gender: { male } },
 		});
 		const p = reduceDemographics({ results: { demographics: [entry(0.4, 0.25), entry(0, 0.25)] } });
 		expect(p).toMatchObject({ comps: 2, male: 0.25, summary: "Skews under 35, leans male" });

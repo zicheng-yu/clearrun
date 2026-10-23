@@ -19,6 +19,9 @@ export interface BriefRival {
 
 const index = (x: number) => Math.round(x * 100);
 
+/** Said of the last week a full run fits: the far end of the calendar is the thinnest. */
+const FAR_EDGE = "The last week whose first four weeks fit on the calendar. Releases that far out are still being dated, so rivals may yet land here.";
+
 function lead(w: WeekScore | undefined, rivals: Map<string, BriefRival>, by: "pressure" | "buzz" = "pressure", n = 2): string[] {
 	if (!w) return [];
 	return [...w.contributors]
@@ -59,7 +62,14 @@ export function planBrief(input: PlanBriefInput) {
 	const weeks = new Map(analysis.calendar.map((w) => [w.week, w]));
 	const week = (w: string, extra: Record<string, unknown> = {}) => {
 		const s = weeks.get(w);
-		return { week: fmtDay(w), pressure: index(s?.p ?? 0), buzz: index(s?.b ?? 0), ...(s?.season.label ? { season: s.season.label } : {}), ...extra };
+		return {
+			week: fmtDay(w),
+			pressure: index(s?.p ?? 0),
+			buzz: index(s?.b ?? 0),
+			...(s?.season.label ? { season: s.season.label } : {}),
+			...(w === analysis.range.latest ? { caveat: FAR_EDGE } : {}),
+			...extra,
+		};
 	};
 	const v = analysis.verdict;
 	const mine = input.you ? weeks.get(input.you.week) : undefined;
