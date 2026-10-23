@@ -11,7 +11,7 @@ Find the week your audience is free: an agent that scores every rival on the liv
 ## Inspiration
 Release dates are a fight over attention. Einav's study of the US film industry (*Economic Inquiry*, 2010) found that releases bunch up on the big holiday weekends more than is good for them, and that moving some holiday releases by a week or two would raise revenue. The tools that plan this today are paid and closed: Gower Street calls its FORECAST STUDIO "the only commercially available release date optimisation tool".
 
-But a crowded week is only crowded for an audience. Barbie and Oppenheimer opened on the same day in July 2023, took $162.0M and $82.4M, and helped give the industry its fourth-biggest weekend ever: two big films can share a date when their audiences are different. The 2026 calendar asks the harder question. Dune: Part Three opens on Dec 18 against Avengers: Doomsday ("Dunesday"), and GTA VI launches on Nov 19, the day before The Hunger Games: Sunrise on the Reaping. When we asked Qloo which film on the upcoming calendar GTA V's fans are most drawn to, it named Sunrise on the Reaping.
+But a crowded week is only crowded for an audience. Barbie and Oppenheimer opened on the same day in July 2023, took $162.0M and $82.4M in their opening weekend, and helped give the industry its fourth-biggest weekend ever: two big films can share a date when their audiences are different. The 2026 calendar asks the harder question. Dune: Part Three opens on Dec 18 against Avengers: Doomsday ("Dunesday"), and GTA VI launches on Nov 19, the day before The Hunger Games: Sunrise on the Reaping. When we asked Qloo which film on the upcoming calendar GTA V's fans are most drawn to, it named Sunrise on the Reaping.
 
 A general-purpose model can't tell you whether your audience is free on a given week. It doesn't know the current calendar (asked for the dates of the 20 most-watched upcoming titles, it got 20% right), and it can't measure whose fans overlap. Qloo's taste graph can.
 
@@ -26,7 +26,7 @@ Describe your audience with 2–5 released films whose fans you want (your comps
 - runs what-ifs (move or remove a rival, move your own title), recomputed instantly in the browser with no new calls.
 
 Then it keeps going:
-- **Watch and re-plan:** after every daily refresh, a watched plan is re-planned against the new calendar. Date moves, new entrants and verdict flips are logged, each with a note from the agent. **Simulate** shows what the check would do if a rival moved.
+- **Watch and re-plan:** after every daily refresh, a watched plan is re-planned against the new calendar. Date moves, new entrants and verdict flips are logged, each with a note from the agent. **Simulate** shows what the daily check would do if a rival moved.
 - **The model alone:** beside each agent answer, the same model answers the same question with no tools, and its dates are checked against the live calendar.
 - **Backtests:** three famous same-day openings, re-planned as Clear Run would have seen them eight weeks earlier.
 - **Share links:** every plan, agent answer, watch and the backtests has a link that unfurls into a card drawn from the live data.
