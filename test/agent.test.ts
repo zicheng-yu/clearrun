@@ -143,5 +143,8 @@ describe("scripted planner", () => {
 			"- Alpha shares these taste tags with the comps: Epic, Space opera.",
 			"Comps: Comp One and Comp Two. Pressure is a relative index, not a box-office forecast, and unreleased films are scored from their metadata.",
 		]);
+		// An undated plan whose clearest week is the last one a full run fits says the calendar is still filling in there.
+		const far = scriptedAnswer({ topRivals: [], clearWeeks: [{ week: "Apr 2", pressure: 20, nearby: [], caveat: "last week" }], dangerWeeks: [] }, ["Comp One"]);
+		expect(far.split("\n").at(-1)).toMatch(/metadata\. Apr 2 is the last week whose first four weeks fit on the calendar, and releases that far out are still being dated\.$/);
 	});
 });

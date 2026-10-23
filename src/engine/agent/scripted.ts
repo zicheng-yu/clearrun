@@ -119,9 +119,17 @@ export function readQuestion(question: string, titles: { id: string; title: stri
 
 /** The parts of plan_release's result the answer template reads. */
 export interface PlanFacts {
-	yourTitle?: { title: string; opens: string; verdict: string; rank: string; pressure: number; mainPressure: string[]; bestAlternative: { week: string; pressure: number } };
+	yourTitle?: {
+		title: string;
+		opens: string;
+		verdict: string;
+		rank: string;
+		pressure: number;
+		mainPressure: string[];
+		bestAlternative: { week: string; pressure: number; caveat?: string };
+	};
 	topRivals: { title: string; opens: string; overlap: string }[];
-	clearWeeks: { week: string; pressure: number; season?: string; nearby: string[] }[];
+	clearWeeks: { week: string; pressure: number; season?: string; nearby: string[]; caveat?: string }[];
 	dangerWeeks: { week: string; pressure: number; ledBy: string[] }[];
 	mainRival?: { title: string; sharedTags: string[] };
 }
@@ -154,7 +162,10 @@ export function scriptedAnswer(facts: PlanFacts, compNames: string[]): string {
 	if (danger) lines.push(`- Most crowded: ${danger.week}, pressure ${danger.pressure}${danger.ledBy.length ? `, led by ${list(danger.ledBy)}` : ""}.`);
 	if (facts.mainRival?.sharedTags.length) lines.push(`- ${facts.mainRival.title} shares these taste tags with the comps: ${facts.mainRival.sharedTags.slice(0, 4).join(", ")}.`);
 	else if (facts.topRivals.length) lines.push(`- Biggest rivals: ${list(facts.topRivals.slice(0, 3).map((r) => `${r.title} (${r.opens}, overlap ${r.overlap})`))}.`);
-	lines.push(`Comps: ${list(compNames)}. Pressure is a relative index, not a box-office forecast, and unreleased films are scored from their metadata.`);
+	// The week the answer points at, when it's the last one a full run fits: releases that far out are still being dated.
+	const point = y ? (y.verdict === "hold" ? undefined : y.bestAlternative) : weeks[0];
+	const far = point?.caveat ? ` ${point.week} is the last week whose first four weeks fit on the calendar, and releases that far out are still being dated.` : "";
+	lines.push(`Comps: ${list(compNames)}. Pressure is a relative index, not a box-office forecast, and unreleased films are scored from their metadata.${far}`);
 	return lines.join("\n");
 }
 
