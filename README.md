@@ -4,6 +4,8 @@
 
 Built for the [Qloo Agentic Hackathon](https://qloo.devpost.com/) (2026). Live at **https://clearrun.zichengyu.com**.
 
+![Clear Run's verdict for Dune: Part Three, which shares Dec 18 with Avengers: Doomsday: move to Mar 12?](docs/screenshots/plan.jpg)
+
 > Status: live. Ask the release agent a question in plain English, pick a featured scenario (Dunesday, GTA VI week, a family slot, indie horror), or describe your audience with released comps. Clear Run scores every rival on the live calendar, explains the overlap with Qloo taste tags, recommends weeks, and watches the plan: after every daily refresh it re-plans and logs what changed. Next to each agent answer, the same model with no tools answers the same question, and its dates are checked against the slate. The Backtests tab re-runs three same-day openings (Barbenheimer, Glicked, Sonic 3 and Mufasa) as Clear Run would have seen them eight weeks earlier. Every plan, agent answer, watch and the backtests has a share link, and the link unfurls into a card drawn from the live data. With no keys at all, `npm run dev:mock` runs the whole app on a frozen calendar and synthetic scores.
 
 ## How it works
@@ -21,6 +23,7 @@ Built for the [Qloo Agentic Hackathon](https://qloo.devpost.com/) (2026). Live a
    - Each week is scored as your opening week across your first four weeks, summing rival overlap² × size × decay.
    - Season multipliers turn that into clear weeks, danger weeks and counter-programming openings, plus a hold/move verdict when your title is already dated.
    - What-ifs (move or remove a rival, move your title) recompute in the browser with no new Qloo calls.
+   - Picks stop at the last week whose first four weeks fit on the calendar. Fewer releases are dated that far out, so when that week is the pick, the planner says it may still fill up.
 
 6. **Explanations:**
    - Qloo `/v2/analysis/compare` gives the taste tags your comps share with a rival (a game is compared through its proxy), and the tags only one side has.
@@ -173,7 +176,18 @@ TMDB is deliberately not used: its API terms forbid use in ML/AI applications.
   - Wicked and Gladiator II were already close before release (#12–13 of 57), and little changed after it.
   - These are taste overlaps, not outcomes: no claim here is about grosses or about whether a date was right.
 
+## What it looks like
+
+| | |
+| --- | --- |
+| ![The release agent: its trace, and an answer whose dates are checked](docs/screenshots/agent.jpg) | ![The same model with no tools, its dates checked against the live calendar](docs/screenshots/baseline.jpg) |
+| ![The pressure calendar for Dune fans](docs/screenshots/calendar.jpg) | ![Why Avengers: Doomsday overlaps with Dune's fans, in Qloo's taste tags](docs/screenshots/rival.jpg) |
+| ![Simulate on a watched plan: a rival taken off the calendar](docs/screenshots/watch.jpg) | ![Backtests: before release vs. today](docs/screenshots/backtests.jpg) |
+| ![A share link and its card](docs/screenshots/share.jpg) | ![On a phone: the landing page, a verdict and the backtests](docs/screenshots/mobile.jpg) |
+
 ## Develop
+
+Requires Node.js 22.18 or later.
 
 ```sh
 npm install
@@ -199,4 +213,4 @@ Release dates: Wikipedia (CC BY-SA 4.0), including each game's article and the 2
 
 ## License
 
-MIT
+[MIT](LICENSE)
