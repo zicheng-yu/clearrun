@@ -52,10 +52,15 @@ export default defineConfig(({ mode }) => {
 				QLOO_GLOBAL_RESERVE: bindings.text("2000"),
 				// Days ahead covered by the release slate.
 				SLATE_DAYS: bindings.text("180"),
-				// Secrets, never committed: .dev.vars locally, uploaded with `cf deploy --secrets-file .dev.vars`.
-				QLOO_API_KEY: bindings.secret(),
-				OPENROUTER_API_KEY: bindings.secret(),
-				ADMIN_TOKEN: bindings.secret(),
+				// Secrets, never committed: .dev.vars locally, uploaded with `cf deploy --secrets-file .dev.vars`. The offline demo
+				// declares none, so it never asks for keys and never sees one set in the shell.
+				...(mock
+					? {}
+					: {
+							QLOO_API_KEY: bindings.secret(),
+							OPENROUTER_API_KEY: bindings.secret(),
+							ADMIN_TOKEN: bindings.secret(),
+						}),
 				// The offline demo keeps its own local database, so it never mixes with live data (and is never deployed).
 				ASSETS: bindings.assets(),
 				DB: bindings.d1(mock ? { id: "00000000-0000-4000-8000-000000000de0", name: "clearrun-demo" } : { id: "fcf2a527-e528-4d34-8f3e-fb94eaa6c97d", name: "clearrun-db" }),
